@@ -12,19 +12,67 @@
 
 ---
 
-## Engine overview
-project-root/
-├── experimental_ui/        # Your existing Streamlit app
-│   └── app.py              # Now just imports from 'engine'
-├── stats_engine/           # The new "Core"
+## Repository Structure
+
+```text
+.
+├── core/                       # The "Brain": Framework-agnostic Python logic
 │   ├── __init__.py
-│   ├── frequentist.py      # z-test, SRM checks
-│   ├── bayesian.py         # Bayesian priors/posteriors
-│   ├── sequential.py       # LLR logic
-│   └── forecasting.py      # Prophet wrappers
-├── tests/                  # Critical for a math engine
-├── setup.py                # Or pyproject.toml
-└── requirements.txt
+│   ├── frequentist/            # Z-tests, t-tests, SRM checks
+│   │   ├── __init__.py
+│   │   └── z_test.py
+│   ├── bayesian/               # Posterior sampling & Conjugate priors
+│   │   ├── __init__.py
+│   │   └── analysis.py
+│   ├── sequential/             # Always-valid LLR & SPRT
+│   │   ├── __init__.py
+│   │   └── spr_test.py
+│   └── forecasting/            # Prophet wrappers for MDE/Sample Size
+│       ├── __init__.py
+│       └── power_analysis.py
+│
+├── api/                        # The "Interface": GCP Deployment Layer
+│   ├── main.py                 # FastAPI endpoints (Entry point for Cloud Run)
+│   ├── schemas.py              # Pydantic models for request/response
+│   └── dependencies.py         # Auth and GCP logging setup
+│
+├── tests/                      # Validation: Statistically verified unit tests
+│   ├── test_frequentist.py
+│   └── test_sequential.py
+│
+├── docker/                     # Containerization
+│   └── Dockerfile              # Multi-stage build for Cloud Run
+│
+├── pyproject.toml              # Build system (Poetry/Pip)
+├── requirements.txt            # Production dependencies
+└── README.md                   # This file
+```
+
+## System Design
+```mermaid
+graph LR
+    subgraph "Data Layer"
+        BQ[(BigQuery)]
+        GCS[Cloud Storage]
+    end
+
+    subgraph "Core Engine (Library)"
+        direction TB
+        Stats[Frequentist/Bayesian]
+        Seq[Sequential LLR]
+        Fore[Prophet Forecasting]
+        Checks[SRM/Interactions]
+    end
+
+    subgraph "Execution Layer (GCP)"
+        CR[Cloud Run - API]
+        CF[Cloud Functions - Triggers]
+        BQ_RF[BQ Remote Functions]
+    end
+
+    BQ & GCS --> CR
+    Stats & Seq & Fore & Checks --> CR & CF & BQ_RF
+```
 
 ## Core Algorithmic Pillars
 
