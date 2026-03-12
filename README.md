@@ -15,37 +15,82 @@
 ## Repository Structure
 
 ```text
-.
-├── core/                       # The "Brain": Framework-agnostic Python logic
-│   ├── __init__.py
-│   ├── frequentist/            # Z-tests, t-tests, SRM checks
+axiom/
+│
+├── pyproject.toml                  # installable as a package: pip install axiom
+├── setup.cfg
+├── README.md
+├── .github/
+│   └── workflows/
+│       ├── test.yml                # pytest on push
+│       └── deploy.yml              # deploy Cloud Functions on merge to main
+│
+├── engine/                          # main importable package
+│   ├── __init__.py                 # exposes top-level API
+│   │
+│   ├── core/                       # shared primitives used by all modules
 │   │   ├── __init__.py
-│   │   └── z_test.py
-│   ├── bayesian/               # Posterior sampling & Conjugate priors
+│   │   ├── models.py               # dataclasses: ExperimentInput, AnalysisResult, etc.
+│   │   └── validators.py           # input validation (raises ValueError, not Streamlit warnings)
+│   │
+│   ├── frequentist/
 │   │   ├── __init__.py
-│   │   └── analysis.py
-│   ├── sequential/             # Always-valid LLR & SPRT
+│   │   ├── operations.py           # run_ztest(), apply_sidak(), apply_cuped()
+│   │   └── confidence.py           # compute_ci(), compute_non_inferiority()
+│   │
+│   ├── bayesian/
 │   │   ├── __init__.py
-│   │   └── spr_test.py
-│   └── forecasting/            # Prophet wrappers for MDE/Sample Size
+│   │   └── operations.py           # run_bayesian(), compute_posterior()
+│   │
+│   ├── sequential/
+│   │   ├── __init__.py
+│   │   └── operations.py           # run_msprt(), compute_llr(), project_time_to_success()
+│   │
+│   ├── pretest/
+│   │   ├── __init__.py
+│   │   ├── operations.py           # compute_sample_size(), compute_mde()
+│   │   └── forecasting.py          # run_prophet_forecast(), run_fixed_forecast()
+│   │
+│   ├── srm/
+│   │   ├── __init__.py
+│   │   └── operations.py           # run_srm_check(), normalize_proportions()
+│   │
+│   ├── interaction/
+│   │   ├── __init__.py
+│   │   └── operations.py           # run_interaction_analysis(), run_random_forest()
+│   │
+│   ├── behavioral/
+│   │   ├── __init__.py
+│   │   └── operations.py           # run_welch_ttest(), winsorize(), log_transform()
+│   │
+│   └── continuous/
 │       ├── __init__.py
-│       └── power_analysis.py
+│       └── operations.py           # run_continuous_analysis(), detect_outliers_iqr()
 │
-├── api/                        # The "Interface": GCP Deployment Layer
-│   ├── main.py                 # FastAPI endpoints (Entry point for Cloud Run)
-│   ├── schemas.py              # Pydantic models for request/response
-│   └── dependencies.py         # Auth and GCP logging setup
+├── gcp/                            # GCP adapter layer
+│   ├── functions/
+│   │   ├── frequentist/
+│   │   │   └── main.py             # Cloud Function entry point → calls axiom.frequentist
+│   │   ├── bayesian/
+│   │   │   └── main.py
+│   │   ├── sequential/
+│   │   │   └── main.py
+│   │   ├── pretest/
+│   │   │   └── main.py
+│   │   ├── srm/
+│   │   │   └── main.py
+│   │   └── ...
+│   └── requirements.txt            # GCP-specific deps (functions-framework, etc.)
 │
-├── tests/                      # Validation: Statistically verified unit tests
-│   ├── test_frequentist.py
-│   └── test_sequential.py
-│
-├── docker/                     # Containerization
-│   └── Dockerfile              # Multi-stage build for Cloud Run
-│
-├── pyproject.toml              # Build system (Poetry/Pip)
-├── requirements.txt            # Production dependencies
-└── README.md                   # This file
+└── tests/
+    ├── unit/
+    │   ├── test_frequentist.py
+    │   ├── test_bayesian.py
+    │   ├── test_sequential.py
+    │   ├── test_srm.py
+    │   └── ...
+    └── integration/
+        └── test_gcp_handlers.py    # tests the Cloud Function wrappers end-to-end
 ```
 
 ## System Design
