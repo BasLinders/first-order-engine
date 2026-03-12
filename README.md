@@ -12,6 +12,20 @@
 
 ---
 
+## Engine overview
+project-root/
+├── experimental_ui/        # Your existing Streamlit app
+│   └── app.py              # Now just imports from 'engine'
+├── stats_engine/           # The new "Core"
+│   ├── __init__.py
+│   ├── frequentist.py      # z-test, SRM checks
+│   ├── bayesian.py         # Bayesian priors/posteriors
+│   ├── sequential.py       # LLR logic
+│   └── forecasting.py      # Prophet wrappers
+├── tests/                  # Critical for a math engine
+├── setup.py                # Or pyproject.toml
+└── requirements.txt
+
 ## Core Algorithmic Pillars
 
 The engine utilizes seven distinct layers of analysis to eliminate bias and maximize sensitivity:
