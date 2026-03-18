@@ -31,7 +31,7 @@ axiom/
 │   ├── core/                       # shared primitives used by all modules
 │   │   ├── __init__.py
 │   │   ├── models.py               # dataclasses: ExperimentInput, AnalysisResult, etc.
-│   │   └── validators.py           # input validation (raises ValueError, not Streamlit warnings)
+│   │   └── validators.py           # input validation (raises ValueError)
 │   │
 │   ├── frequentist/
 │   │   ├── __init__.py
