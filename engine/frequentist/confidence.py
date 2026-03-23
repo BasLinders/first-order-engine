@@ -1,45 +1,40 @@
 import numpy as np
 from scipy.stats import norm
 from typing import Tuple, Dict
+from engine.core.models import AlternativeHypothesis
 
-def compute_ci(
-    rate: float, 
-    n: int, 
-    alpha: float, 
-    reduction_factor: float = 1.0
+def compute_interval_difference(
+    diff_cr: float,
+    se_diff: float,
+    alpha: float
 ) -> Tuple[float, float]:
-    """Computes the confidence interval for a single proportion."""
-    z_crit = norm.ppf(1 - alpha / 2)
-    se = np.sqrt((rate * (1 - rate) * reduction_factor) / n)
-    
-    lower = rate - z_crit * se
-    upper = rate + z_crit * se
-    return (lower, upper)
+    """
+    Computes the Confidence Interval for the difference between 
+    Variant and Control (Two-sided).
+    """
+    z_critical = norm.ppf(1 - alpha / 2)
+    moe = z_critical * se_diff
+    return (diff_cr - moe, diff_cr + moe)
 
 def compute_non_inferiority(
     p_ctrl: float,
     p_chal: float,
-    n_ctrl: int,
-    n_chal: int,
+    se_diff: float,
     margin: float,
-    confidence_level: float,
-    reduction_factor: float = 1.0
+    confidence_level: float
 ) -> Dict:
     """
-    Calculates non-inferiority stats based on the Z-test logic from hexkit.
+    Calculates non-inferiority using unpooled SE.
     """
-    se_unpooled = np.sqrt(
-        (p_ctrl * (1 - p_ctrl) * reduction_factor / n_ctrl) + 
-        (p_chal * (1 - p_chal) * reduction_factor / n_chal)
-    )
-    
     # Non-inferiority Z-stat: (Difference + Margin) / SE
-    z_stat_ni = (p_chal - p_ctrl + margin) / se_unpooled
+    z_stat_ni = (p_chal - p_ctrl + margin) / se_diff
     p_value_ni = 1 - norm.cdf(z_stat_ni)
     
     alpha_ni = 1 - (confidence_level / 100)
     z_crit_ni = norm.ppf(1 - alpha_ni)
-    lower_bound_diff = (p_chal - p_ctrl) - (z_crit_ni * se_unpooled)
+    
+    # Lower bound of the difference for NI
+    lower_bound_diff = (p_chal - p_ctrl) - (z_crit_ni * se_diff)
     
     return {
         "p_value": p_value_ni,
