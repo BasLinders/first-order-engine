@@ -1,7 +1,43 @@
+import string
 import numpy as np
 from scipy.stats import norm
 from typing import List, Dict, Tuple
 from engine.core.models import AlternativeHypothesis
+
+# --- Data Quality visualizations --- 
+def get_srm_viz_data(
+    visitor_counts: List[int], 
+    expected_counts: List[float]
+) -> List[Dict]:
+    """
+    Prepares data in a 'melted' format ready for Altair grouped bar charts.
+    Matches the render_results logic in the UI.
+    """
+    alphabet = string.ascii_uppercase
+    num_variants = len(visitor_counts)
+    
+    melted_data = []
+    
+    for i in range(num_variants):
+        variant_label = alphabet[i]
+        
+        # Add Observed record
+        melted_data.append({
+            "Variant": variant_label,
+            "Metric": "Observed",
+            "Count": visitor_counts[i],
+            "opacity": 1.0
+        })
+        
+        # Add Expected record
+        melted_data.append({
+            "Variant": variant_label,
+            "Metric": "Expected",
+            "Count": round(expected_counts[i]),
+            "opacity": 0.4
+        })
+        
+    return melted_data
 
 # --- Frequentist visualizations ---
 
