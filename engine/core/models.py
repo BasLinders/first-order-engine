@@ -1,4 +1,6 @@
 from enum import Enum
+from pydantic import BaseModel
+from datetime import date
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
 
@@ -49,3 +51,19 @@ class BusinessCaseInput:
     projection_period: int = 183  # 6 months default
     alpha_prior: float = 1.0
     beta_prior: float = 1.0
+
+# --- Sequential ---
+
+class SequentialDataPoint(BaseModel):
+    date: date
+    variant_name: str
+    visitors: int
+    conversions: int
+
+class SequentialConfig(BaseModel):
+    alpha: float = 0.05
+    beta: float = 0.20
+    tau: float = 0.01
+    num_variants: int = 1
+    max_visitors: int = 10000
+    p0: Optional[float] = None # For one-sample tests
