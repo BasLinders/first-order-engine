@@ -25,12 +25,12 @@ axiom/
 │       ├── test.yml                # pytest on push
 │       └── deploy.yml              # deploy Cloud Functions on merge to main
 │
-├── engine/                          # main importable package
+├── engine/                         # main importable package
 │   ├── __init__.py                 # exposes top-level API
 │   │
 │   ├── core/                       # shared primitives used by all modules
 │   │   ├── __init__.py
-│   │   ├── models.py               # dataclasses: ExperimentInput, AnalysisResult, etc.
+│   │   ├── models.py               # dataclasses: AlternativeHypothesis, ExperimentInput, etc.
 │   │   └── validators.py           # input validation (raises ValueError)
 │   │
 │   ├── frequentist/
@@ -63,9 +63,13 @@ axiom/
 │   │   ├── __init__.py
 │   │   └── operations.py           # run_welch_ttest(), winsorize(), log_transform()
 │   │
-│   └── continuous/
-│       ├── __init__.py
-│       └── operations.py           # run_continuous_analysis(), detect_outliers_iqr()
+│   ├── continuous/
+│   |    ├── __init__.py
+│   |    └── operations.py          # run_continuous_analysis(), detect_outliers_iqr()
+|   |
+|   └── viz/
+|        ├── __init__.py
+|        └── operations.py          # 
 │
 ├── gcp/                            # GCP adapter layer
 │   ├── functions/
