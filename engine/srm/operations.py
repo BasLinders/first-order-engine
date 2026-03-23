@@ -39,7 +39,7 @@ class SRMEngine:
                         "dimension": dim,
                         "segment": seg,
                         "p_value": res["p_value"],
-                        "status": "🚨 FAIL" if res["is_mismatch"] else "✅ PASS"
+                        "status": "FAIL" if res["is_mismatch"] else "PASS"
                     })
         
         return pd.DataFrame(report).sort_values("p_value")
