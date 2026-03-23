@@ -111,3 +111,42 @@ def get_forest_plot_data(
             "error_plus": high - uplift
         })
     return forest_data
+
+# --- Bayesian Visualizations --- 
+
+from scipy.stats import beta
+from typing import List, Dict, Tuple
+
+def get_bayesian_density_coords(
+    alpha: float, 
+    beta_param: float, 
+    n_points: int = 100
+) -> Dict[str, List[float]]:
+    """
+    Generates X (CR) and Y (Density) for the Beta distribution curve.
+    Focuses on the 99.9% density region for a clean 'bell' look.
+    """
+    # Zoom into the relevant area of the distribution
+    x_min, x_max = beta.ppf([0.001, 0.999], alpha, beta_param)
+    x = np.linspace(x_min, x_max, n_points)
+    y = beta.pdf(x, alpha, beta_param)
+    
+    return {"x": x.tolist(), "y": y.tolist()}
+
+def get_bayesian_winner_status(
+    prob_variant_best: float,
+    prob_control_best: float,
+    threshold: float
+) -> Dict[str, str]:
+    """
+    Translates probabilities into semantic labels for UI rendering.
+    """
+    p_best_pct = prob_variant_best * 100
+    p_ctrl_pct = prob_control_best * 100
+
+    if p_best_pct >= threshold:
+        return {"label": "winner", "color": "green", "class": "success"}
+    elif p_ctrl_pct >= threshold:
+        return {"label": "loss averted", "color": "red", "class": "danger"}
+    else:
+        return {"label": "inconclusive", "color": "black", "class": "neutral"}
