@@ -36,40 +36,40 @@ axiom/
 │   ├── frequentist/
 │   │   ├── __init__.py
 │   │   ├── operations.py           # run_ztest(), apply_sidak(), apply_cuped()
-│   │   └── confidence.py           # compute_ci(), compute_non_inferiority()
+│   │   └── confidence.py           # compute_interval_difference(), compute_non_inferiority()
 │   │
 │   ├── bayesian/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_bayesian(), compute_posterior()
+│   │   └── operations.py           # run_bayesian_core(), get_posterior_parameters(), run_multi_variant_risk_assessment(), 
 │   │
 │   ├── sequential/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_msprt(), compute_llr(), project_time_to_success()
+│   │   └── operations.py           # calculate_boundaries(), calculate_llr_vectorized(), estimate_remaining_time(), process_test_trajectory()
 │   │
 │   ├── pretest/
 │   │   ├── __init__.py
-│   │   ├── operations.py           # compute_sample_size(), compute_mde()
-│   │   └── forecasting.py          # run_prophet_forecast(), run_fixed_forecast()
+│   │   ├── operations.py           # compute_sample_size(), compute_mde(), holm_bonferroni_correction(), get_z_alpha(), calculate_mde_table(), calculate_fixed_sample_size()
+│   │   └── forecasting.py          # run_seasonal_forecast()
 │   │
 │   ├── srm/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_srm_check(), normalize_proportions()
+│   │   └── operations.py           # calculate_chi_squared(), diagnose_segments(), get_srm_thresholds()
 │   │
 │   ├── interaction/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_interaction_analysis(), run_random_forest()
+│   │   └── operations.py           # prepare_long_format(), fit_interaction_model(), format_summary_table()
 │   │
 │   ├── behavioral/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_welch_ttest(), winsorize(), log_transform()
+│   │   └── operations.py           # detect_outliers_mask(), apply_transformations(), run_welch_inference()
 │   │
 │   ├── continuous/
 │   |    ├── __init__.py
-│   |    └── operations.py          # run_continuous_analysis(), detect_outliers_iqr()
+│   |    └── operations.py          # detect_outliers_ols(), winsorize_series(), run_comparison_suite()
 |   |
 |   └── viz/
 |        ├── __init__.py
-|        └── operations.py          # 
+|        └── operations.py          # Various visualizations
 │
 ├── gcp/                            # GCP adapter layer
 │   ├── functions/
