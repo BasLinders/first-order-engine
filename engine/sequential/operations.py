@@ -32,26 +32,28 @@ class SequentialEngine:
         tau: float = 0.01
     ) -> np.ndarray:
         """
-        Vectorized LLR calculation for high-performance trajectory mapping.
-        Formula: LLR = 0.5 * (ln(V / (V + tau)) + (diff^2 / V) * (tau / (V + tau)))
+        Vectorized LLR calculation with safe division and optimized math.
         """
-        # conversion rates
-        p_ctrl = x_ctrl / n_ctrl
-        p_var = x_var / n_var
+        # Safe division to prevent RuntimeWarnings on day 0
+        p_ctrl = np.divide(x_ctrl, n_ctrl, out=np.zeros_like(x_ctrl, dtype=float), where=n_ctrl!=0)
+        p_var = np.divide(x_var, n_var, out=np.zeros_like(x_var, dtype=float), where=n_var!=0)
         
-        # Pooled conversion rate for variance estimation
-        p_pool = (x_ctrl + x_var) / (n_ctrl + n_var)
+        # Pooled conversion rate
+        n_total = n_ctrl + n_var
+        p_pool = np.divide(x_ctrl + x_var, n_total, out=np.zeros_like(n_total, dtype=float), where=n_total!=0)
         
-        # Bernoulli variance of the difference
-        # We add a tiny epsilon to avoid division by zero
         eps = 1e-10
-        variance = (p_pool * (1 - p_pool) * (1/n_ctrl + 1/n_var)) + eps
+        # Safe reciprocal for variance calculation
+        inv_n_ctrl = np.divide(1.0, n_ctrl, out=np.zeros_like(n_ctrl, dtype=float), where=n_ctrl!=0)
+        inv_n_var = np.divide(1.0, n_var, out=np.zeros_like(n_var, dtype=float), where=n_var!=0)
+        
+        variance = (p_pool * (1 - p_pool) * (inv_n_ctrl + inv_n_var)) + eps
         
         diff = p_var - p_ctrl
         
-        # mSPRT Log-Likelihood Ratio
+        # Optimized squaring (diff * diff is faster than diff**2)
         llr = 0.5 * (np.log(variance / (variance + tau)) + 
-                    (diff**2 / variance) * (tau / (variance + tau)))
+                    ((diff * diff) / variance) * (tau / (variance + tau)))
         
         return np.nan_to_num(llr, nan=0.0)
 
@@ -87,20 +89,37 @@ class SequentialEngine:
 
     def process_test_trajectory(self, df: pd.DataFrame, params: Dict) -> pd.DataFrame:
         """
-        Orchestrates the LLR calculation for all variants in the dataset.
+        Orchestrates LLR calculation, ensuring data is cumulative and dates align safely.
+        Assumes input df has: ['measurement_date', 'variant_name', 'visitors', 'conversions']
         """
         results = []
         upper, lower = self.calculate_boundaries(params['alpha'], params['beta'], params['num_variants'])
         
-        # Separate Control
-        ctrl_df = df[df['variant_name'] == 'Control'].sort_values('measurement_date')
+        # 1. Guarantee data is cumulative per variant
+        df = df.sort_values(['variant_name', 'measurement_date'])
+        df['visitors'] = df.groupby('variant_name')['visitors'].cumsum()
+        df['conversions'] = df.groupby('variant_name')['conversions'].cumsum()
+        
+        # Separate Control and set index for easier joining
+        ctrl_df = df[df['variant_name'] == 'Control'].set_index('measurement_date')
         
         for variant in df['variant_name'].unique():
-            if variant == 'Control': continue
+            if variant == 'Control': 
+                continue
             
-            var_df = df[df['variant_name'] == variant].sort_values('measurement_date')
-            merged = pd.merge(var_df, ctrl_df, on='measurement_date', suffixes=('_var', '_ctrl'))
+            var_df = df[df['variant_name'] == variant].set_index('measurement_date')
             
+            # 2. Outer join handles missing dates (e.g., variant started later or data dropped)
+            merged = var_df.join(ctrl_df, how='outer', lsuffix='_var', rsuffix='_ctrl')
+            
+            # Forward-fill missing cumulative totals, then fill leading NaNs with 0
+            merged = merged.ffill().fillna(0)
+            
+            # Bring measurement_date back as a column
+            merged = merged.reset_index()
+            merged['variant_name'] = variant 
+            
+            # 3. Calculate LLR
             merged['llr'] = self.calculate_llr_vectorized(
                 merged['visitors_ctrl'].values, merged['conversions_ctrl'].values,
                 merged['visitors_var'].values, merged['conversions_var'].values,
@@ -111,4 +130,4 @@ class SequentialEngine:
             merged['lower_bound'] = lower
             results.append(merged)
             
-        return pd.concat(results) if results else pd.DataFrame()
+        return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
