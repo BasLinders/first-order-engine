@@ -1,7 +1,9 @@
 import numpy as np
+import pandas as pd
 import concurrent.futures
+import statsmodels.formula.api as smf
 from scipy.stats import norm
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict, Any
 from engine.core.models import AlternativeHypothesis
 
 # --- Corrections ---
@@ -13,6 +15,82 @@ def apply_sidak(alpha: float, num_variants: int) -> float:
         return alpha
     return 1 - (1 - alpha) ** (1 / num_comparisons)
 
+class FrequentistEngine:
+    """
+    Advanced Frequentist methods including Variance Reduction (CUPED) 
+    and OLS-based inference.
+    """
+
+    @staticmethod
+    def apply_cuped(
+        df: pd.DataFrame, 
+        target_kpi: str, 
+        pre_period_kpi: str, 
+        variant_col: str = 'experience_variant_label'
+    ) -> pd.DataFrame:
+        """
+        Standard CUPED: Adjusts the post-period KPI using the pre-period covariate.
+        Formula: Y_cuped = Y_actual - theta * (X_pre - mean(X_pre))
+        """
+        # Calculate Theta (covariance / variance of pre-period)
+        covariance = df[[target_kpi, pre_period_kpi]].cov().iloc[0, 1]
+        variance_pre = df[pre_period_kpi].var()
+        
+        theta = covariance / variance_pre if variance_pre != 0 else 0
+        
+        # Apply adjustment
+        mean_pre = df[pre_period_kpi].mean()
+        df[f'{target_kpi}_cuped'] = df[target_kpi] - theta * (df[pre_period_kpi] - mean_pre)
+        
+        return df
+
+    def run_lin_adjustment(
+        self, 
+        df: pd.DataFrame, 
+        target_kpi: str, 
+        pre_period_kpi: str, 
+        variant_col: str = 'experience_variant_label'
+    ) -> Dict[str, Any]:
+        """
+        Implements Lin's Adjustment (2013).
+        Regression: Y ~ Treatment + Covariate_Centered + (Treatment * Covariate_Centered)
+        
+        This is more robust than standard CUPED for heterogeneous treatment effects.
+        """
+        # 1. Center the covariate (pre-period data)
+        df['covariate_centered'] = df[pre_period_kpi] - df[pre_period_kpi].mean()
+        
+        # 2. Define Treatment Dummy (Assumes 'A' or 'Control' is baseline)
+        # We ensure the model treats the first alphabetical variant as baseline
+        variants = sorted(df[variant_col].unique())
+        baseline = variants[0]
+        test_variant = variants[1]
+
+        # 3. Fit OLS with interaction term
+        # Lin (2013) recommends: Y = alpha + beta*Treatment + gamma*Covariate + delta*(Treatment * Covariate)
+        formula = f"{target_kpi} ~ C({variant_col}, Treatment(reference='{baseline}')) * covariate_centered"
+        model = smf.ols(formula, data=df).fit(cov_type='HC3') # Using Robust Standard Errors
+        
+        # 4. Extract Results
+        # The coefficient for the Treatment dummy is our Adjusted Lift
+        treatment_key = f"C({variant_col}, Treatment(reference='{baseline}'))[T.{test_variant}]"
+        
+        p_val = model.pvalues[treatment_key]
+        ate = model.params[treatment_key] # Average Treatment Effect
+        
+        # Calculate relative lift based on the intercept (Control Mean)
+        control_mean = model.params['Intercept']
+        relative_lift = ate / control_mean if control_mean != 0 else 0
+
+        return {
+            "p_value": float(p_val),
+            "is_significant": p_val < 0.05,
+            "absolute_ate": float(ate),
+            "relative_lift": float(relative_lift),
+            "confidence_interval": model.conf_int().loc[treatment_key].tolist(),
+            "model_summary": model.summary2().tables[1]
+        }
+        
 # --- Statistical Tests --- 
 
 def run_ztest(
