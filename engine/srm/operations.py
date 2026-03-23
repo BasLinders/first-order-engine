@@ -1,29 +1,64 @@
+import pandas as pd
 import scipy.stats as stats
-import statistics
-from typing import List, Dict, Optional
+import numpy as np
+from typing import Dict, List, Any
 
-def calculate_srm(visitor_counts: List[int], expected_proportions: List[float]) -> Dict:
+class SRMEngine:
     """
-    Performs the Chi-squared test to check for Sample Ratio Mismatch.
+    Advanced diagnostic suite for Sample Ratio Mismatch (SRM).
     """
-    total_visitors = sum(visitor_counts)
-    sum_props = sum(expected_proportions)
 
-    if sum_props == 0:
-        raise ValueError("Total proportions must be greater than zero.")
+    @staticmethod
+    def calculate_chi_squared(observed: List[int], expected: List[float]) -> Dict[str, Any]:
+        """Standard Chi-Squared Goodness of Fit."""
+        total = sum(observed)
+        expected_counts = [total * (p / sum(expected)) for p in expected]
+        chi2, p_val = stats.chisquare(f_obs=observed, f_exp=expected_counts)
+        
+        return {
+            "p_value": float(p_val),
+            "is_mismatch": p_val < 0.01,
+            "severity": (max(observed)/sum(observed)) - (expected[0]/sum(expected))
+        }
 
-    # Normalize proportions (the 'User Adjustment' logic)
-    expected_distribution = [p / sum_props for p in expected_proportions]
-    
-    # Calculate expected frequencies: E = Total * p
-    expected_counts = [total_visitors * p for p in expected_distribution]
-    
-    # Perform the chi-squared test
-    chi2, p_value = stats.chisquare(f_obs=visitor_counts, f_exp=expected_counts)
-    
-    return {
-        "p_value": p_value,
-        "expected_counts": expected_counts,
-        "mean_expected": statistics.mean(expected_counts),
-        "is_mismatch": p_value < 0.01  # Your specific threshold
-    }
+    def diagnose_segments(self, df: pd.DataFrame, dimensions: List[str], 
+                         variant_col: str, expected_ratio: List[float]) -> pd.DataFrame:
+        """
+        Runs SRM checks across multiple dimensions to find the root cause.
+        """
+        report = []
+        for dim in dimensions:
+            segments = df[dim].unique()
+            for seg in segments:
+                counts = df[df[dim] == seg][variant_col].value_counts().sort_index().tolist()
+                
+                # Only test if we have data for all variants
+                if len(counts) == len(expected_ratio):
+                    res = self.calculate_chi_squared(counts, expected_ratio)
+                    report.append({
+                        "dimension": dim,
+                        "segment": seg,
+                        "p_value": res["p_value"],
+                        "status": "🚨 FAIL" if res["is_mismatch"] else "✅ PASS"
+                    })
+        
+        return pd.DataFrame(report).sort_values("p_value")
+
+    @staticmethod
+    def get_srm_thresholds(total_n: int, alpha: float = 0.01) -> Dict[str, float]:
+        """
+        Calculates what 'Observed %' would trigger an SRM at this sample size.
+        Helps stakeholders understand the sensitivity of the test.
+        """
+        # Critical value for Chi-square with 1 dof (for A/B tests)
+        critical_value = stats.chi2.ppf(1 - alpha, df=1)
+        
+        # Solving for the proportion difference that hits the critical value
+        # This is an approximation for a 50/50 split
+        margin = np.sqrt(critical_value / (4 * total_n))
+        
+        return {
+            "lower_bound_pct": 0.5 - margin,
+            "upper_bound_pct": 0.5 + margin,
+            "total_sample": total_n
+        }
