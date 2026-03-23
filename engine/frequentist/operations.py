@@ -1,40 +1,53 @@
 import numpy as np
 from scipy.stats import norm
-from typing import List
+from typing import List, Optional
+from engine.core.models import AlternativeHypothesis
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
-    """Calculates the adjusted alpha threshold using Šidák correction."""
+    """Calculates adjusted alpha for multiple comparisons."""
     num_comparisons = num_variants - 1
     if num_comparisons <= 1:
         return alpha
     return 1 - (1 - alpha) ** (1 / num_comparisons)
 
-def apply_cuped(rho: float) -> float:
-    """Calculates the variance reduction factor based on correlation rho."""
-    return 1 - (rho ** 2)
-
 def run_ztest(
-    """
-    Runs the z-test.
-    """
-    p_ctrl: float, 
-    p_chal: float, 
-    n_ctrl: int, 
-    n_chal: int, 
-    reduction_factor: float = 1.0
+    diff_cr: float, 
+    se_diff: float, 
+    alternative: AlternativeHypothesis
 ) -> float:
     """
-    Performs a standard two-sided Z-test for proportions.
-    Returns the p-value.
+    Performs the Z-test using the Unpooled Variance approach.
+    Matches the branching logic for 'Greater', 'Less', and 'Two-sided'.
     """
-    # Pooled proportion
-    p_pooled = (p_ctrl * n_ctrl + p_chal * n_chal) / (n_ctrl + n_chal)
+    if se_diff == 0:
+        return 1.0
+        
+    z_stat = diff_cr / se_diff
     
-    # Standard Error (Pooled, with CUPED adjustment)
-    se = np.sqrt(
-        p_pooled * (1 - p_pooled) * reduction_factor * (1/n_ctrl + 1/n_chal)
-    )
+    if alternative == AlternativeHypothesis.GREATER:
+        return 1 - norm.cdf(z_stat)
+    elif alternative == AlternativeHypothesis.LESS:
+        return norm.cdf(z_stat)
+    else: # Two-sided
+        return 2 * (1 - norm.cdf(abs(z_stat)))
+
+def calculate_observed_power(
+    diff_cr: float,
+    se_diff: float,
+    alpha: float,
+    alternative: AlternativeHypothesis
+) -> float:
+    """
+    Analytical Power calculation logic extracted from hexkit.
+    """
+    if se_diff == 0:
+        return 1.0
+        
+    z_delta = abs(diff_cr) / se_diff
     
-    z_score = (p_chal - p_ctrl) / se
-    p_value = 2 * (1 - norm.cdf(abs(z_score)))
-    return p_value
+    if alternative in [AlternativeHypothesis.GREATER, AlternativeHypothesis.LESS]:
+        z_alpha = norm.ppf(1 - alpha)
+        return norm.cdf(z_delta - z_alpha)
+    else: # Two-sided
+        z_alpha = norm.ppf(1 - alpha / 2)
+        return norm.cdf(z_delta - z_alpha) + norm.cdf(-z_delta - z_alpha)
