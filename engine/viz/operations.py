@@ -1,7 +1,8 @@
 import string
 import numpy as np
+import pandas as pd
 from scipy.stats import norm
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 from engine.core.models import AlternativeHypothesis
 
 # --- Data Quality visualizations --- 
@@ -192,3 +193,63 @@ def get_sequential_viz_data(
         "lower_bound": lower,
         "trajectories": trajectories
     }
+
+# --- Interaction Analysis visualizations --- 
+
+class InteractionVizEngine:
+    """
+    Prepares JSON-ready data structures for visualizing test interactions.
+    Returns coordinate data.
+    """
+    @staticmethod
+    def get_forest_plot_data(model) -> List[Dict[str, Union[str, float, bool]]]:
+        """
+        Calculates coefficients and 95% Confidence Intervals for a Forest Plot.
+        Matches the logic used in Bas's Interaction Analysis app.
+        """
+        # Extract params and confidence intervals (ignoring Intercept)
+        # Using model.conf_int() to get the [0.025, 0.975] bounds
+        params = model.params[1:]
+        conf = model.conf_int()[1:]
+        
+        results_df = pd.DataFrame({
+            'Feature': params.index,
+            'Coefficient': params.values,
+            'Lower': conf[0].values,
+            'Upper': conf[1].values
+        })
+
+        forest_data = []
+        
+        # Determine significance and color state
+        for _, row in results_df.iterrows():
+            # A result is significant if the CI does not cross zero (the null hypothesis)
+            is_significant = not (row['Lower'] <= 0 <= row['Upper'])
+            
+            # Semantic color state (matches common Streamlit themes)
+            color_state = "significant" if is_significant else "neutral"
+
+            forest_data.append({
+                "label": row['Feature'], # The cleaned name from format_summary_table
+                "mean_effect": float(row['Coefficient']), # Log-Odds
+                "error_minus": float(row['Coefficient'] - row['Lower']),
+                "error_plus": float(row['Upper'] - row['Coefficient']),
+                "is_significant": is_significant,
+                "color_state": color_state
+            })
+            
+        # Return sorted data (smallest effect size first for y-axis order)
+        return sorted(forest_data, key=lambda x: x['mean_effect'])
+
+    @staticmethod
+    def get_interaction_plot_coords(df, kpi, segment_column) -> List[Dict[str, Union[str, float]]]:
+        """
+        Calculates the mean KPI for every 'Variant X Segment' pair.
+        Returns data ready for a standard interaction/point plot.
+        """
+        # Group by both dimensions and calculate the average
+        # Using observed=True to prevent issues with empty categorical groups
+        means = df.groupby(['experience_variant_label', segment_column], observed=True)[kpi].mean().reset_index()
+        
+        # Return a simple list of dictionaries (records)
+        return means.to_dict(orient='records')
