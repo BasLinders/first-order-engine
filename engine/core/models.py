@@ -2,6 +2,8 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
 
+# --- Frequentist ---
+
 class AlternativeHypothesis(Enum):
     """Matches the 'tail' logic in your original experiment_analysis.py."""
     TWO_SIDED = "Two-sided"
@@ -37,3 +39,13 @@ class FrequentistResult:
     # These match your NI logic
     lower_bound_diff: Optional[float] = None
     is_non_inferior: Optional[bool] = None
+
+# --- Bayesian ---
+
+@dataclass(frozen=True)
+class BusinessCaseInput:
+    aovs: List[float]
+    runtime_days: int
+    projection_period: int = 183  # 6 months default
+    alpha_prior: float = 1.0
+    beta_prior: float = 1.0
