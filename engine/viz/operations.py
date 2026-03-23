@@ -150,3 +150,45 @@ def get_bayesian_winner_status(
         return {"label": "loss averted", "color": "red", "class": "danger"}
     else:
         return {"label": "inconclusive", "color": "black", "class": "neutral"}
+
+# --- Sequential (LLR Always Vailid Approach) ---
+
+def get_sequential_viz_data(
+    data_points: List[Dict], 
+    config: SequentialConfig
+) -> Dict:
+    """
+    Transforms raw time-series data into LLR trajectories for plotting.
+    Handles both One-sample and Multi-sample logic.
+    """
+    import pandas as pd
+    df = pd.DataFrame(data_points)
+    upper, lower = calculate_msprt_boundaries(config.alpha, config.beta, config.num_variants)
+    
+    trajectories = []
+    variants = [v for v in df['variant_name'].unique() if v != "Control"]
+    
+    for variant in variants:
+        v_df = df[df['variant_name'] == variant].copy()
+        
+        if config.p0 is not None: # One-sample logic
+            v_df['llr'] = v_df.apply(lambda r: calculate_msprt_llr(
+                r['visitors'], int(r['visitors'] * config.p0), 
+                r['visitors'], r['conversions'], config.tau
+            ), axis=1)
+        else: # Multi-sample logic
+            ctrl_df = df[df['variant_name'] == 'Control']
+            merged = pd.merge(v_df, ctrl_df, on='date', suffixes=('_var', '_ctrl'))
+            merged['llr'] = merged.apply(lambda r: calculate_msprt_llr(
+                r['visitors_ctrl'], r['conversions_ctrl'],
+                r['visitors_var'], r['conversions_var'], config.tau
+            ), axis=1)
+            v_df = merged
+            
+        trajectories.append(v_df[['date', 'variant_name', 'llr']].to_dict(orient='records'))
+
+    return {
+        "upper_bound": upper,
+        "lower_bound": lower,
+        "trajectories": trajectories
+    }
