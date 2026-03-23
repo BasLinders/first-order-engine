@@ -1,94 +1,101 @@
 import numpy as np
+import pandas as pd
 import string
-from scipy.stats import beta
-from typing import List, Dict, Tuple
-from engine.core.models import BusinessCaseInput
+from typing import List, Dict, Any, Optional
 
-def get_posterior_parameters(
-    conversions: int, 
-    visitors: int, 
-    prior_alpha: float = 1.0, 
-    prior_beta: float = 1.0
-) -> Tuple[float, float]:
-    """Updates the Beta distribution parameters (Alpha/Beta) based on data."""
-    return prior_alpha + conversions, prior_beta + (visitors - conversions)
-
-def run_bayesian_core(
-    visitors: List[int],
-    conversions: List[int],
-    n_samples: int = 100000
-) -> Dict:
+class BayesianEngine:
     """
-    Calculates the Probability of Being Best for all variants.
-    Returns the samples matrix for further risk analysis.
+    Engine for Beta-Binomial Bayesian A/B testing and Decision Theory risk modeling.
     """
-    all_samples = []
-    for v, c in zip(visitors, conversions):
-        a, b = get_posterior_parameters(c, v)
-        all_samples.append(np.random.beta(a, b, n_samples))
-    
-    samples_matrix = np.array(all_samples)
-    winner_indices = np.argmax(samples_matrix, axis=0)
-    
-    prob_being_best = [float(np.mean(winner_indices == i)) for i in range(len(visitors))]
-    
-    return {
-        "prob_being_best": prob_being_best,
-        "samples_matrix": samples_matrix
-    }
 
-def run_multi_variant_risk_assessment(
-    visitors: List[int],
-    conversions: List[int],
-    biz_case: BusinessCaseInput,
-    prob_to_be_best: List[float],
-    n_simulations: int = 20000,
-    seed: int = 42
-) -> List[Dict]:
-    """
-    Monetary Risk Logic: Translates CR probabilities into 6-month revenue projections.
-    """
-    np.random.seed(seed)
-    num_variants = len(visitors)
-    if biz_case.runtime_days <= 0:
-        return []
+    def __init__(self, seed: Optional[int] = 42):
+        if seed:
+            np.random.seed(seed)
 
-    # Generate Daily Conversion Volume Samples
-    all_daily_samples = []
-    for i in range(num_variants):
-        a_post, b_post = get_posterior_parameters(conversions[i], visitors[i], biz_case.alpha_prior, biz_case.beta_prior)
-        samples_cr = beta.rvs(a_post, b_post, size=n_simulations)
-        daily_vol = (samples_cr * visitors[i]) / biz_case.runtime_days
-        all_daily_samples.append(daily_vol)
+    @staticmethod
+    def _get_posterior_params(conversions: int, visitors: int, a_prior: float = 1.0, b_prior: float = 1.0):
+        """Standard Beta-Binomial update logic."""
+        return a_prior + conversions, b_prior + (visitors - conversions)
 
-    control_samples = all_daily_samples[0]
-    control_aov = biz_case.aovs[0]
-    results = []
-
-    for i in range(1, num_variants):
-        challenger_samples = all_daily_samples[i]
-        challenger_aov = biz_case.aovs[i]
-        diff_samples = challenger_samples - control_samples
+    def run_probability_analysis(
+        self, 
+        visitors: List[int], 
+        conversions: List[int], 
+        n_samples: int = 100000
+    ) -> Dict[str, Any]:
+        """
+        Calculates Probability of Being Best using vectorized Monte Carlo sampling.
+        """
+        # 1. Vectorized Posterior Parameter Calculation
+        visitors_arr = np.array(visitors)
+        conversions_arr = np.array(conversions)
         
-        # Uplift Calculation
-        prob_challenger_better = (diff_samples > 0).mean()
-        pos_diffs = diff_samples[diff_samples > 0]
-        expected_daily_gain = np.mean(pos_diffs) if len(pos_diffs) > 0 else 0
-        uplift_monetary = expected_daily_gain * challenger_aov * biz_case.projection_period * prob_challenger_better
+        a_post = 1.0 + conversions_arr
+        b_post = 1.0 + (visitors_arr - conversions_arr)
         
-        # Risk Calculation
-        prob_control_better = (diff_samples < 0).mean()
-        neg_diffs = diff_samples[diff_samples < 0]
-        expected_daily_loss = np.mean(neg_diffs) if len(neg_diffs) > 0 else 0
-        risk_monetary = expected_daily_loss * control_aov * biz_case.projection_period * prob_control_better
+        # 2. Vectorized Sampling: Result is (num_variants, n_samples)
+        # Using np.random.beta for maximum performance
+        samples = np.random.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(len(visitors), n_samples))
+        
+        # 3. Identify Winners per sample
+        winner_indices = np.argmax(samples, axis=0)
+        
+        # 4. Calculate Probabilities
+        counts = np.bincount(winner_indices, minlength=len(visitors))
+        prob_being_best = (counts / n_samples).tolist()
+        
+        return {
+            "prob_being_best": prob_being_best,
+            "samples": samples
+        }
 
-        results.append({
-            "Variant": string.ascii_uppercase[i],
-            "Chance to Beat Control": round(prob_challenger_better * 100, 2),
-            "Chance to be Best Overall": round(prob_to_be_best[i] * 100, 2),
-            "Expected Monetary Uplift": round(float(uplift_monetary), 2),
-            "Expected Monetary Risk": round(float(risk_monetary), 2),
-            "Expected Total Contribution": round(float(uplift_monetary + risk_monetary), 2)
-        })
+    def run_monetary_projection(
+        self,
+        visitors: List[int],
+        conversions: List[int],
+        biz_case: Any, # Expecting BusinessCaseInput model
+        prob_best_overall: List[float],
+        n_simulations: int = 50000
+    ) -> List[Dict[str, Any]]:
+        """
+        Decision Theory logic: Projections based on 'Expected Loss' and 'Expected Gain'.
+        """
+        num_variants = len(visitors)
+        # Probabilities from a fresh simulation for the Risk context
+        analysis = self.run_probability_analysis(visitors, conversions, n_samples=n_simulations)
+        samples = analysis['samples']
+        
+        # Convert CR samples to Volume samples (conversions per day)
+        daily_vol_samples = (samples * np.array(visitors)[:, np.newaxis]) / biz_case.runtime_days
+        
+        control_vol = daily_vol_samples[0]
+        control_aov = biz_case.aovs[0]
+        results = []
 
-    return results
+        for i in range(1, num_variants):
+            variant_vol = daily_vol_samples[i]
+            variant_aov = biz_case.aovs[i]
+            
+            # Difference in daily conversions
+            diff = variant_vol - control_vol
+            
+            # Uplift: Mean of positive differences * AOV * Days
+            # This is the 'Expected Value' of the gain
+            gain_samples = np.maximum(diff, 0)
+            uplift = np.mean(gain_samples) * variant_aov * biz_case.projection_period
+            
+            # Risk: Mean of negative differences (as positive value) * AOV * Days
+            # This is the 'Expected Loss' (Bayesian Risk)
+            loss_samples = np.abs(np.minimum(diff, 0))
+            risk = np.mean(loss_samples) * control_aov * biz_case.projection_period
+            
+            results.append({
+                "Variant": string.ascii_uppercase[i],
+                "Prob to Beat Control": float((diff > 0).mean()),
+                "Prob to be Best": prob_best_overall[i],
+                "Expected Uplift": round(float(uplift), 2),
+                "Expected Risk": round(float(risk), 2),
+                "Net Contribution": round(float(uplift - risk), 2)
+            })
+
+        return results
