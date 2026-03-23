@@ -24,6 +24,8 @@ def get_z_alpha(num_variants: int, alpha: float, tails: str) -> float:
         return norm.ppf(1 - alpha)
     return norm.ppf(1 - alpha / 2)
 
+# --- Fixed deadline MDE calculations --- 
+
 def calculate_mde_table(
     num_variants: int, 
     baseline_visitors: int, 
@@ -47,3 +49,38 @@ def calculate_mde_table(
         mde_rel = ((z_alpha + z_power) * se / baseline_rate) * 100
         results.append({"Week": week, "Visitors": n, "MDE": mde_rel})
     return results
+
+# --- Fixed Sample Size calculations ---
+
+def calculate_fixed_sample_size(
+    baseline_cr: float,
+    mde_relative: float,
+    num_variants: int,
+    alpha: float = 0.05,
+    power: float = 0.80,
+    tails: str = "Two-sided"
+) -> int:
+    """
+    Calculates required sample size per variant using pooled variance.
+    """
+    if baseline_cr <= 0 or mde_relative <= 0:
+        return 0
+
+    # 1. Parameter setup
+    p1 = baseline_cr
+    p2 = baseline_cr * (1 + mde_relative)
+    p_pooled = (p1 + p2) / 2
+    
+    # 2. Get adjusted Z-alpha (Holm-Bonferroni for multi-variant)
+    z_alpha = get_z_alpha(num_variants, alpha, tails)
+    z_beta = norm.ppf(power)
+
+    # 3. Standard Error components
+    # Using the formula: n = [ (Z_a * sqrt(2*p_avg*(1-p_avg)) + Z_b * sqrt(p1*(1-p1) + p2*(1-p2)))^2 ] / (p2-p1)^2
+    term1 = z_alpha * np.sqrt(2 * p_pooled * (1 - p_pooled))
+    term2 = z_beta * np.sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+    
+    diff = p2 - p1
+    
+    n_per_variant = ((term1 + term2) ** 2) / (diff ** 2)
+    return int(np.ceil(n_per_variant))
