@@ -1,0 +1,3 @@
+[tool.setuptools]
+packages = ["axiom"]
+package-dir = {"" = "."}
