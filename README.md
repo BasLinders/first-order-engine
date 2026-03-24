@@ -25,7 +25,7 @@ axiom/
 │       ├── test.yml                # pytest on push
 │       └── deploy.yml              # deploy Cloud Functions on merge to main
 │
-├── engine/                         # main importable package
+├── axiom/                          # main importable package
 │   ├── __init__.py                 # exposes top-level API
 │   │
 │   ├── core/                       # shared primitives used by all modules
