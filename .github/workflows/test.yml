@@ -1,7 +1,46 @@
+name: Python Tests
+
 on:
   push:
+    branches: [ "main", "master" ]
     paths:
-      - 'axiom/axiom/**'
+      - 'axiom/**'
       - 'tests/**'
       - 'pyproject.toml'
-      - 'setup.cfg'
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # You can add 3.11, 3.12 etc. here to test multiple versions
+        python-version: ["3.10"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip' # Speeds up subsequent runs by caching dependencies
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 'pip install -e .' installs your 'axiom' package in editable mode.
+          # This ensures 'import axiom' works exactly like it will for your users.
+          pip install -e .
+          
+          # Install test-specific dependencies
+          # If you have these in a requirements-dev.txt, use that instead.
+          pip install pytest pytest-cov
+
+      - name: Run Pytest
+        # We run from the root, but point to the 'tests/' directory.
+        # --cov=axiom ensures we only measure coverage for the actual package code.
+        run: |
+          pytest tests/ --doctest-modules --cov=axiom --cov-report=term-missing
