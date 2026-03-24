@@ -1,5 +1,7 @@
 on:
   push:
     paths:
-      - 'axiom/**'
+      - 'axiom/axiom/**'
       - 'tests/**'
+      - 'pyproject.toml'
+      - 'setup.cfg'
