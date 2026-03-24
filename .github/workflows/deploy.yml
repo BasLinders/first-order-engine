@@ -1,0 +1,40 @@
+name: Deploy Cloud Functions
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'axiom/**'          # Re-deploy if core logic changes
+      - 'gcp/functions/**'  # Re-deploy if wrappers change
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # These must be aligned with 'runs-on'
+    permissions:
+      contents: 'read'
+      id-token: 'write'     # Changed underscore to hyphen
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIP_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Deploy Frequentist Function
+        run: |
+          gcloud functions deploy frequentist-handler \
+            --runtime=python310 \
+            --region=us-central1 \
+            --source=. \
+            --entry-point=gcp.functions.frequentist.main.frequentist_handler \
+            --trigger-http \
+            --allow-unauthenticated
