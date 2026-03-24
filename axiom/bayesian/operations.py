@@ -2,7 +2,7 @@ import numpy as np
 import string
 from scipy.stats import beta
 from typing import List, Dict, Any, Optional
-from engine.core.models import BusinessCaseInput
+from axiom.core.models import BusinessCaseInput
 
 class BayesianEngine:
     """
