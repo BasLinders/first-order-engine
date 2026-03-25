@@ -3,15 +3,46 @@ import pandas as pd
 from typing import Tuple, Dict, Optional, Union
 from enum import Enum
 
-class TestType(Enum):
+# Inherit from str to ensure clean JSON serialization over APIs
+class TestType(str, Enum):
     ONE_SAMPLE = "one_sample"
     MULTI_SAMPLE = "multi_sample"
 
 class SequentialEngine:
     """
     Core engine for Mixture Sequential Probability Ratio Testing (mSPRT).
-    Pure statistical logic, strictly decoupled from any UI, routing, or database layers.
     """
+
+    @staticmethod
+    def generate_sequential_conclusion(
+        variant_name: str, 
+        current_llr: float, 
+        upper_bound: float, 
+        lower_bound: float,
+        days_elapsed: int
+    ) -> str:
+        """
+        Evaluates the current LLR against the stopping boundaries and generates 
+        a definitive, UI-agnostic status update.
+        """
+        if current_llr >= upper_bound:
+            return (
+                f"Winner Declared: '{variant_name}' has crossed the upper significance boundary "
+                f"after {days_elapsed} days. The test can be stopped early, and the variant can "
+                "be confidently rolled out."
+            )
+        elif current_llr <= lower_bound:
+            return (
+                f"Futility Reached: '{variant_name}' has crossed the lower boundary after "
+                f"{days_elapsed} days. The variant is highly unlikely to result in a positive "
+                "impact. The test should be stopped to prevent further loss."
+            )
+        else:
+            return (
+                f"Test Running: '{variant_name}' is currently between the decision boundaries "
+                f"(LLR: {current_llr:.2f}). Continue collecting data until a boundary is crossed "
+                "or the maximum sample size is reached."
+            )
 
     @staticmethod
     def calculate_boundaries(alpha: float, beta: float, num_variants: int = 1) -> Tuple[float, float]:
@@ -146,6 +177,13 @@ class SequentialEngine:
                 
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
+                
+                # Add a simple status flag for UI charting colors
+                merged['status'] = np.where(
+                    merged['llr'] >= upper, 'winner',
+                    np.where(merged['llr'] <= lower, 'loser', 'continue')
+                )
+                
                 results.append(merged)
                 
         elif test_type == TestType.ONE_SAMPLE:
@@ -164,6 +202,12 @@ class SequentialEngine:
                 
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
+                
+                merged['status'] = np.where(
+                    merged['llr'] >= upper, 'winner',
+                    np.where(merged['llr'] <= lower, 'loser', 'continue')
+                )
+                
                 results.append(merged)
                 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
