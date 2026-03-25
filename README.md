@@ -18,7 +18,6 @@
 axiom/
 │
 ├── pyproject.toml                  # installable as a package: pip install axiom
-├── setup.cfg
 ├── README.md
 ├── .github/
 │   └── workflows/
@@ -35,37 +34,37 @@ axiom/
 │   │
 │   ├── frequentist/
 │   │   ├── __init__.py
-│   │   ├── operations.py           # run_ztest(), apply_sidak(), apply_cuped()
-│   │   └── confidence.py           # compute_interval_difference(), compute_non_inferiority()
+│   │   ├── operations.py
+│   │   └── confidence.py
 │   │
 │   ├── bayesian/
 │   │   ├── __init__.py
-│   │   └── operations.py           # run_bayesian_core(), get_posterior_parameters(), run_multi_variant_risk_assessment(), 
+│   │   └── operations.py
 │   │
 │   ├── sequential/
 │   │   ├── __init__.py
-│   │   └── operations.py           # calculate_boundaries(), calculate_llr_vectorized(), estimate_remaining_time(), process_test_trajectory()
+│   │   └── operations.py
 │   │
 │   ├── pretest/
 │   │   ├── __init__.py
-│   │   ├── operations.py           # compute_sample_size(), compute_mde(), holm_bonferroni_correction(), get_z_alpha(), calculate_mde_table(), calculate_fixed_sample_size()
-│   │   └── forecasting.py          # run_seasonal_forecast()
+│   │   ├── operations.py
+│   │   └── forecasting.py
 │   │
 │   ├── srm/
 │   │   ├── __init__.py
-│   │   └── operations.py           # calculate_chi_squared(), diagnose_segments(), get_srm_thresholds()
+│   │   └── operations.py
 │   │
 │   ├── interaction/
 │   │   ├── __init__.py
-│   │   └── operations.py           # prepare_long_format(), fit_interaction_model(), format_summary_table()
+│   │   └── operations.py
 │   │
 │   ├── behavioral/
 │   │   ├── __init__.py
-│   │   └── operations.py           # detect_outliers_mask(), apply_transformations(), run_welch_inference()
+│   │   └── operations.py
 │   │
 │   ├── continuous/
 │   |    ├── __init__.py
-│   |    └── operations.py          # detect_outliers_ols(), winsorize_series(), run_comparison_suite()
+│   |    └── operations.py
 |   |
 |   └── viz/
 |        ├── __init__.py
