@@ -9,9 +9,48 @@ class BayesianEngine:
     Decision Theory-based monetary risk projections.
     """
 
-    def __init__(self, seed: Optional[int] = 42):
-        if seed is not None:
-            np.random.seed(seed)
+    def __init__(self, seed: Optional[int] = None):
+        # Uses a thread-safe, isolated Random Number Generator
+        self.rng = np.random.default_rng(seed)
+
+    @staticmethod
+    def generate_bayesian_conclusion(
+        variant_name: str,
+        prob_beat_control: float,
+        expected_uplift: float,
+        expected_risk: float,
+        projection_period: int
+    ) -> str:
+        """
+        Translates Bayesian risk distributions into clear, UI-ready business text.
+        """
+        # Format currency (USD/EUR agnostic for now, just using standard decimal formatting)
+        uplift_str = f"{expected_uplift:,.0f}"
+        risk_str = f"{expected_risk:,.0f}"
+
+        if prob_beat_control >= 0.95:
+            return (
+                f"Strong Winner: '{variant_name}' has a {prob_beat_control:.1%} probability "
+                f"of outperforming the control. Rolling this out carries minimal expected risk "
+                f"({risk_str}) with a projected upside of {uplift_str} over the next {projection_period} days."
+            )
+        elif prob_beat_control <= 0.10:
+            return (
+                f"Clear Loser: '{variant_name}' has only a {prob_beat_control:.1%} chance of beating the control. "
+                f"Rolling this out carries an expected monetary risk of {risk_str}. It is recommended to discard this variant."
+            )
+        elif expected_uplift > expected_risk * 3:
+            return (
+                f"Asymmetric Bet: '{variant_name}' has a {prob_beat_control:.1%} chance to win. "
+                f"While not perfectly certain, the potential upside ({uplift_str}) heavily outweighs "
+                f"the expected risk ({risk_str}). Consider rolling out if you have a high risk tolerance."
+            )
+        else:
+            return (
+                f"Inconclusive: '{variant_name}' has a {prob_beat_control:.1%} probability of beating the control. "
+                f"The potential upside ({uplift_str}) does not definitively outweigh the risk ({risk_str}). "
+                "Collect more data or discard if time-constrained."
+            )
 
     @staticmethod
     def _calculate_posterior_params(
@@ -22,7 +61,6 @@ class BayesianEngine:
     ) -> tuple[float, float]:
         """
         Calculates the posterior parameters for a Beta distribution.
-        Logic: Alpha = prior + successes; Beta = prior + (trials - successes).
         """
         return a_prior + conversions, b_prior + (visitors - conversions)
 
@@ -48,8 +86,8 @@ class BayesianEngine:
         a_post = 1.0 + conversions_arr
         b_post = 1.0 + (visitors_arr - conversions_arr)
         
-        # Vectorized Sampling
-        samples = np.random.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(num_variants, n_samples))
+        # Vectorized Sampling using isolated RNG
+        samples = self.rng.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(num_variants, n_samples))
         
         # Identify the index of the max value across variants for each sample
         winner_indices = np.argmax(samples, axis=0)
@@ -74,56 +112,60 @@ class BayesianEngine:
         conversions: List[int],
         biz_case: BusinessCaseInput,
         prob_best_overall: List[float],
+        variant_labels: List[str], # Required to map the dict and build UI strings
         n_simulations: int = 50000
-    ) -> List[Dict[str, float]]:
+    ) -> List[Dict[str, Any]]:
         """
         Translates conversion rate probabilities into monetary risk and uplift projections.
-        Uses Decision Theory to calculate the 'Expected Value' of choosing a challenger.
         """
         num_variants = len(visitors)
-        if biz_case.runtime_days <= 0 or num_variants < 2:
+        if biz_case.runtime_days <= 0 or num_variants < 2 or len(variant_labels) != num_variants:
             return []
 
-        # Fresh sampling for the decision context (requires samples)
         analysis = self.run_probability_analysis(
             visitors, conversions, n_samples=n_simulations, return_samples=True
         )
         samples = analysis['samples']
         
-        # Convert CR samples to 'Conversions Per Day'
-        # Formula: (CR * visitors_to_date) / days_to_date
         daily_vol_samples = (samples * np.array(visitors)[:, np.newaxis]) / biz_case.runtime_days
         
+        control_label = variant_labels[0]
         control_vol = daily_vol_samples[0]
-        control_aov = biz_case.aovs[0]
+        control_aov = biz_case.aovs.get(control_label, 0.0)
         results = []
 
         for i in range(1, num_variants):
+            variant_label = variant_labels[i]
             variant_vol = daily_vol_samples[i]
-            variant_aov = biz_case.aovs[i]
+            variant_aov = biz_case.aovs.get(variant_label, 0.0)
             
-            # Daily difference in conversion volume compared to control
             diff = variant_vol - control_vol
             
-            # 1. Expected Uplift (Mean of gains * AOV * Period)
             gain_samples = np.maximum(diff, 0)
             uplift = float(np.mean(gain_samples) * variant_aov * biz_case.projection_period)
             
-            # 2. Expected Risk (Mean of losses * AOV * Period)
             loss_samples = np.abs(np.minimum(diff, 0))
             risk = float(np.mean(loss_samples) * control_aov * biz_case.projection_period)
             
-            # 3. Probability to Beat Control
             prob_beat_control = float((diff > 0).mean())
             
-            # Return strictly formatted, machine-readable keys and raw unrounded floats
+            conclusion = self.generate_bayesian_conclusion(
+                variant_name=variant_label,
+                prob_beat_control=prob_beat_control,
+                expected_uplift=uplift,
+                expected_risk=risk,
+                projection_period=biz_case.projection_period
+            )
+
             results.append({
                 "variant_index": i,
+                "variant_label": variant_label,
                 "prob_beat_control": prob_beat_control,
                 "prob_best_overall": prob_best_overall[i],
                 "expected_uplift": uplift,
                 "expected_risk": risk,
-                "expected_total_contribution": uplift - risk
+                "expected_total_contribution": uplift - risk,
+                "conclusion": conclusion
             })
 
         return results
