@@ -3,7 +3,9 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import norm
 from typing import List, Optional, Tuple, Dict, Any
-from engine.core.models import AlternativeHypothesis
+
+# Updated import path based on our earlier root folder rename
+from axiom.core.models import AlternativeHypothesis
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
     """Calculates adjusted alpha for multiple comparisons (A/B/n)."""
@@ -16,7 +18,33 @@ class FrequentistEngine:
     """
     Axiom Frequentist Engine: Implements Variance Reduction (CUPED/Lin),
     Robust OLS Inference, and High-Performance Bootstrapping.
+    Stateless design optimized for Cloud Functions.
     """
+
+    @staticmethod
+    def generate_conclusion_statement(
+        variant_name: str,
+        is_significant: bool,
+        relative_lift: float
+    ) -> str:
+        """
+        Generates a definitive, UI-agnostic summary of the results in English.
+        """
+        if not is_significant:
+            return (
+                f"Inconclusive / Flat: '{variant_name}' shows no statistically "
+                "significant difference from the control. We cannot confidently "
+                "conclude that this variant had a meaningful impact."
+            )
+
+        direction = "positive" if relative_lift > 0 else "negative"
+        action = "a clear winner" if relative_lift > 0 else "performing worse than control"
+        
+        return (
+            f"Significant {direction} result: '{variant_name}' is {action} "
+            f"with an observed relative impact of {relative_lift:+.2%}. "
+            f"You can confidently {'roll this out' if relative_lift > 0 else 'discard this variant'}."
+        )
 
     @staticmethod
     def apply_cuped(
@@ -26,7 +54,7 @@ class FrequentistEngine:
     ) -> pd.DataFrame:
         """
         Standard CUPED adjustment. 
-        Formula: $Y_{cuped} = Y - \theta(X_{pre} - \bar{X}_{pre})$
+        Formula: Y_cuped = Y - theta * (X_pre - mean(X_pre))
         """
         cov = df[[target_kpi, pre_period_kpi]].cov().iloc[0, 1]
         var_pre = df[pre_period_kpi].var()
@@ -37,8 +65,8 @@ class FrequentistEngine:
         df[f'{target_kpi}_cuped'] = df[target_kpi] - theta * (df[pre_period_kpi] - mean_pre)
         return df
 
+    @staticmethod
     def run_lin_adjustment(
-        self, 
         df: pd.DataFrame, 
         target_kpi: str, 
         pre_period_kpi: str, 
@@ -46,7 +74,7 @@ class FrequentistEngine:
     ) -> List[Dict[str, Any]]:
         """
         Lin's Adjustment (2013). More robust than CUPED for heterogeneous effects.
-        Regression: $Y \sim Treatment * (Covariate - \bar{Covariate})$
+        Regression: Y ~ Treatment * (Covariate - mean(Covariate))
         """
         # 1. Setup Data
         df = df.copy()
@@ -56,7 +84,6 @@ class FrequentistEngine:
         baseline = variants[0] # Assumes alphabetical or 'Control' is first
         
         # 2. Fit OLS with Interaction and Robust Standard Errors (HC3)
-        # The interaction term handles cases where the treatment changes the variance.
         formula = f"{target_kpi} ~ C({variant_col}, Treatment(reference='{baseline}')) * cov_centered"
         model = smf.ols(formula, data=df).fit(cov_type='HC3')
         
@@ -125,27 +152,30 @@ class FrequentistEngine:
     ) -> float:
         """
         Calculates observed power via high-performance vectorized bootstrapping.
-        Stays within NumPy C-extensions to bypass the Python GIL.
+        Optimized for Cloud Environments: Uses the Binomial distribution to avoid 
+        massive memory allocations (OOM errors) when N is very large.
         """
-        # Create populations
-        pop_ctrl = np.array([1]*ctrl_conv + [0]*(ctrl_n - ctrl_conv))
-        pop_chal = np.array([1]*chal_conv + [0]*(chal_n - chal_conv))
+        if ctrl_n == 0 or chal_n == 0:
+            return 0.0
 
-        # Generate ALL resample indices at once (Matrix: n_bootstraps x N)
-        # Note: For extremely large N, consider chunking to avoid MemoryError
-        idx_ctrl = np.random.randint(0, ctrl_n, size=(n_bootstraps, ctrl_n))
-        idx_chal = np.random.randint(0, chal_n, size=(n_bootstraps, chal_n))
+        ctrl_p = ctrl_conv / ctrl_n
+        chal_p = chal_conv / chal_n
 
-        # Vectorized mean calculation
-        means_ctrl = pop_ctrl[idx_ctrl].mean(axis=1)
-        means_chal = pop_chal[idx_chal].mean(axis=1)
+        # Simulate conversion COUNTS directly using the Binomial distribution
+        # Size is just (n_bootstraps,) instead of (n_bootstraps, N)
+        sim_ctrl_convs = np.random.binomial(n=ctrl_n, p=ctrl_p, size=n_bootstraps)
+        sim_chal_convs = np.random.binomial(n=chal_n, p=chal_p, size=n_bootstraps)
+
+        # Calculate simulated conversion rates
+        means_ctrl = sim_ctrl_convs / ctrl_n
+        means_chal = sim_chal_convs / chal_n
 
         # Pooled Standard Error (Vectorized)
-        p_pooled = (means_ctrl * ctrl_n + means_chal * chal_n) / (ctrl_n + chal_n)
-        se_pooled = np.sqrt(p_pooled * (1 - p_pooled) * (1/ctrl_n + 1/chal_n))
+        p_pooled = (sim_ctrl_convs + sim_chal_convs) / (ctrl_n + chal_n)
         
-        # Avoid division by zero in edge cases
-        se_pooled[se_pooled == 0] = np.inf
+        # Add a tiny epsilon to avoid division by zero if a simulated pooled p is 0 or 1
+        epsilon = 1e-9
+        se_pooled = np.sqrt(p_pooled * (1 - p_pooled) * (1/ctrl_n + 1/chal_n) + epsilon)
         
         z_stats = (means_chal - means_ctrl) / se_pooled
         p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
