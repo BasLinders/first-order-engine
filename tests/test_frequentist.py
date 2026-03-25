@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
-from axiom.frequentist.operations import FrequentistEngine
-from axiom.core.models import ExperimentInput, AlternativeHypothesis
+from foe.frequentist.operations import FrequentistEngine
+from foe.core.models import ExperimentInput, AlternativeHypothesis
 
 @pytest.fixture
 def engine():
