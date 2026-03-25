@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.stats import norm
 from typing import Tuple, Dict, Any
-from engine.core.models import AlternativeHypothesis
 
 def compute_interval_difference(
     diff_cr: float,
@@ -25,6 +24,25 @@ def compute_interval_difference(
     moe = z_critical * se_diff
     
     return (float(diff_cr - moe), float(diff_cr + moe))
+
+def _generate_ni_conclusion(
+    is_non_inferior: bool,
+    margin: float,
+    lower_bound_diff: float,
+    confidence_level: float
+) -> str:
+    """Helper method to generate a stakeholder-friendly NI conclusion."""
+    if is_non_inferior:
+        return (
+            f"Non-inferiority established: We are {confidence_level}% confident that the "
+            f"challenger is not worse than the control by more than our accepted margin of {margin:.2%}. "
+            f"The worst-case scenario is a difference of {lower_bound_diff:+.2%}, allowing for a safe rollout."
+        )
+    return (
+        f"Inconclusive / Too Risky: We cannot confidently guarantee that the challenger performs "
+        f"within the acceptable margin of {margin:.2%}. The worst-case performance could drop to "
+        f"{lower_bound_diff:+.2%}, which violates our safety threshold."
+    )
 
 def compute_non_inferiority(
     p_ctrl: float,
@@ -50,7 +68,8 @@ def compute_non_inferiority(
             "p_value": 1.0,
             "lower_bound_diff": float(p_chal - p_ctrl),
             "is_non_inferior": False,
-            "margin_used": margin
+            "margin_used": margin,
+            "conclusion": "Invalid data: Standard error is zero or negative."
         }
 
     # 1. Calculate the Z-statistic for Non-Inferiority
@@ -70,11 +89,13 @@ def compute_non_inferiority(
     # This represents the 'worst-case scenario' for the difference.
     # If this value is greater than -margin, we reject inferiority.
     lower_bound_diff = diff - (z_crit_ni * se_diff)
+    is_ni = bool(p_value_ni <= alpha_ni)
     
     return {
         "p_value": float(p_value_ni),
         "lower_bound_diff": float(lower_bound_diff),
-        "is_non_inferior": bool(p_value_ni <= alpha_ni),
+        "is_non_inferior": is_ni,
         "margin_used": margin,
-        "confidence_level": confidence_level
+        "confidence_level": confidence_level,
+        "conclusion": _generate_ni_conclusion(is_ni, margin, lower_bound_diff, confidence_level)
     }
