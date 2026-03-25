@@ -1,7 +1,8 @@
 from enum import Enum
 from datetime import date
 from typing import List, Optional, Tuple, Dict
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+from axiom.core.validators import validate_experiment_data
 
 # --- Frequentist ---
 
@@ -21,6 +22,12 @@ class ExperimentInput(BaseModel):
     confidence_level: float = Field(0.95, ge=0.0, lt=1.0)
     reduction_factor: float = Field(1.0, description="CUPED adjustment factor")
     labels: Optional[List[str]] = Field(None, description="Names of the variants (e.g., ['Control', 'Treatment'])")
+
+    @model_validator(mode='after')
+    def check_statistical_soundness(self) -> 'ExperimentInput':
+        # ValueError is converted to clean 422 API error.
+        validate_experiment_data(self.visitors, self.conversions)
+        return self
 
 class FrequentistResult(BaseModel):
     """
