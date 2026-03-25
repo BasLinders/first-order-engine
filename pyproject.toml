@@ -12,8 +12,12 @@ license = {text = "MIT"}
 authors = [
     {name = "Bas Linders", email = "bas_linders@hotmail.com"}
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
 
-# Libraries needed
+# All core mathematical and engine dependencies
 dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
@@ -39,9 +43,11 @@ gcp = [
     "google-cloud-storage>=2.0.0",
 ]
 
-# Automatically find `axiom` and all sub-packages
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["axiom*"]
+# Prevents test/deployment folders from being shipped in the built package
+exclude = ["tests*", "gcp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
