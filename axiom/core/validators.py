@@ -1,8 +1,8 @@
 from typing import List
 
-def validate_experiment_data(visitors: List[int], conversions: List[int]):
+def validate_experiment_data(visitors: List[int], conversions: List[int]) -> None:
     """
-    Validates that input data is statistically and logically sound.
+    Validates that input arrays are mathematically and logically sound.
     Raises ValueError if data is invalid.
     """
     if len(visitors) != len(conversions):
