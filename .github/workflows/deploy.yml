@@ -9,16 +9,63 @@ on:
       - 'gcp/functions/**'  # Re-deploy if wrappers change
 
 jobs:
-  deploy:
+  test:
+    name: Run Unit Tests
     runs-on: ubuntu-latest
-    # These must be aligned with 'runs-on'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies and package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run Pytest
+        run: pytest tests/
+
+  deploy:
+    name: Deploy API Endpoints
+    needs: test
+    runs-on: ubuntu-latest
+    
+    # Run entire job 8 times in parallel, substituting ${{ matrix.module }} with the current item in the list
+    strategy:
+      matrix:
+        module: 
+          - frequentist
+          - bayesian
+          - sequential
+          - continuous
+          - behavioral
+          - interaction
+          - pretest
+          - srm
+
     permissions:
       contents: 'read'
-      id-token: 'write'     # Changed underscore to hyphen
+      id-token: 'write'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Build Axiom Package (Wheel)
+        run: |
+          python -m pip install build
+          python -m build
+          # Copy the wheel into the specific module's deployment folder
+          cp dist/axiom-0.1.0-py3-none-any.whl gcp/functions/${{ matrix.module }}/
 
       - name: Authenticate to Google Cloud
         uses: 'google-github-actions/auth@v2'
@@ -29,12 +76,12 @@ jobs:
       - name: Set up Cloud SDK
         uses: 'google-github-actions/setup-gcloud@v2'
 
-      - name: Deploy Frequentist Function
+      - name: Deploy ${{ matrix.module }} Function
         run: |
-          gcloud functions deploy frequentist-handler \
+          gcloud functions deploy ${{ matrix.module }}-handler \
             --runtime=python310 \
             --region=us-central1 \
-            --source=. \
-            --entry-point=gcp.functions.frequentist.main.frequentist_handler \
+            --source=gcp/functions/${{ matrix.module }} \
+            --entry-point=${{ matrix.module }}_handler \
             --trigger-http \
             --allow-unauthenticated
