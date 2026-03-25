@@ -16,8 +16,8 @@ class ExperimentInput(BaseModel):
     """The raw data and settings for the Axiom Synthesis Engine."""
     model_config = ConfigDict(frozen=True)
 
-    visitors: List[int] = Field(..., description="List of visitor counts per variant")
-    conversions: List[int] = Field(..., description="List of conversion counts per variant")
+    visitors: List[int] = Field(..., description="List of visitor counts per variant", min_length=2)
+    conversions: List[int] = Field(..., description="List of conversion counts per variant", min_length=2)
     alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
     confidence_level: float = Field(0.95, ge=0.0, lt=1.0)
     reduction_factor: float = Field(1.0, description="CUPED adjustment factor")
