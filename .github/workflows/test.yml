@@ -1,4 +1,4 @@
-name: Python Tests
+name: Python Tests & Linting
 
 on:
   push:
@@ -11,12 +11,35 @@ on:
     branches: [ "main", "master" ]
 
 jobs:
+  lint:
+    name: Code Quality (Flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Linting Tools
+        run: |
+          pip install flake8
+
+      - name: Run Flake8
+        # This will use your .flake8 config file automatically
+        run: flake8 .
+
   test:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    needs: lint # Only run tests if linting passes
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false # Keep testing other versions even if one fails
       matrix:
-        # You can add 3.11, 3.12 etc. here to test multiple versions
-        python-version: ["3.10"]
+        # Testing across the full spectrum of supported versions in 2026
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout code
@@ -26,21 +49,15 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip' # Speeds up subsequent runs by caching dependencies
+          cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install Axiom with Dev Dependencies
         run: |
           python -m pip install --upgrade pip
-          # 'pip install -e .' installs your 'axiom' package in editable mode.
-          # This ensures 'import axiom' works exactly like it will for your users.
-          pip install -e .
-          
-          # Install test-specific dependencies
-          # If you have these in a requirements-dev.txt, use that instead.
-          pip install pytest pytest-cov
+          # Use the [dev] extra we defined in pyproject.toml
+          pip install -e .[dev]
 
-      - name: Run Pytest
-        # We run from the root, but point to the 'tests/' directory.
-        # --cov=axiom ensures we only measure coverage for the actual package code.
+      - name: Run Pytest with Coverage
+        # --doctest-modules is great because it tests the examples in your docstrings!
         run: |
           pytest tests/ --doctest-modules --cov=axiom --cov-report=term-missing
