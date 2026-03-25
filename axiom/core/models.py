@@ -45,7 +45,8 @@ class FrequentistResult(BaseModel):
     is_significant: bool
     # CI for the difference (diff_cr - moe, diff_cr + moe)
     ci_diff: Tuple[float, float] = Field(..., description="Confidence interval bounds: (lower, upper)")
-    observed_power: float = Field(..., ge=0.0, le=1.0)
+    conclusion: str = Field(..., description="Definitive, UI-agnostic summary of the result")
+    
     # These match your NI logic
     lower_bound_diff: Optional[float] = None
     is_non_inferior: Optional[bool] = None
