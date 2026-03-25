@@ -1,10 +1,9 @@
 import re
-
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from typing import List
-
+import patsy
+from typing import List, Dict, Any
 
 # Pre-compiled regex for parsing statsmodels coefficient names like:
 # "C(test1)[T.VariantB]"  →  group(1)="test1", group(2)="VariantB"
@@ -13,163 +12,114 @@ _COEF_TERM_RE = re.compile(r"C\((\w+)\)\[T\.([^\]]+)\]")
 class InteractionEngine:
     """
     Analyzes synergies and clashes between concurrent A/B tests.
-
-    Uses a Generalized Linear Model (GLM) with a Binomial family.
-    The model is fit on pre-aggregated (conversions, visitors) count data
-    using a two-column binomial response, which produces correct standard
-    errors and p-values without inflating the effective sample size.
+    Strictly returns JSON-serializable primitives for Cloud APIs.
     """
 
-    # Maximum number of concurrent tests allowed in a single model.
     # A full factorial model produces 2^N terms; beyond 4 tests the model
     # becomes numerically unstable and very hard to interpret.
     MAX_TESTS = 4
 
     @staticmethod
-    def prepare_aggregated_format(
-        input_df: pd.DataFrame, test_cols: List[str]
-    ) -> pd.DataFrame:
+    def generate_interaction_conclusion(
+        term_label: str,
+        coef: float,
+        p_value: float,
+        alpha: float = 0.05
+    ) -> str:
         """
-        Prepares a cleaned, aggregated dataframe for model fitting.
-
-        Each row represents one unique combination of test variants.
-        The response is kept as (conversions, non_conversions) — a two-column
-        binomial response — which is the statistically correct approach for
-        pre-aggregated count data.
-
-        Parameters
-        ----------
-        input_df : pd.DataFrame
-            Must contain the test variant columns plus 'visitors' and
-            'conversions' integer columns.
-        test_cols : list[str]
-            Column names identifying the A/B test variant assignments.
-
-        Returns
-        -------
-        pd.DataFrame
-            Cleaned dataframe with string-typed variant columns and an added
-            'non_conversions' column.
+        Generates definitive business statements for main effects and interactions.
         """
+        is_significant = bool(p_value < alpha)
+        is_interaction = "Clash/Synergy" in term_label
+
+        if not is_interaction:
+            if not is_significant:
+                return "Flat: This variant does not have a statistically significant independent effect."
+            direction = "Positive" if coef > 0 else "Negative"
+            return f"Significant {direction} Independent Effect: This variant significantly alters conversion rates on its own."
+
+        # Interaction Logic
+        if not is_significant:
+            return "Independent: These variants do not significantly interfere with each other. It is safe to run them concurrently."
+
+        if coef > 0:
+            return (
+                "Synergy Detected: Combining these variants yields a higher conversion rate "
+                "than the sum of their individual effects. Highly recommended to deploy together."
+            )
+        else:
+            return (
+                "Clash/Cannibalization: Combining these variants hurts overall performance, "
+                "yielding worse results than expected. Do not deploy these variants to the same users."
+            )
+
+    @staticmethod
+    def prepare_aggregated_format(input_df: pd.DataFrame, test_cols: List[str]) -> pd.DataFrame:
+        """Prepares a cleaned, aggregated dataframe for model fitting."""
         df = input_df.copy()
-
-        # Cast variant columns to str so statsmodels treats them as categorical
         for col in test_cols:
             df[col] = df[col].astype(str)
-
         df["non_conversions"] = df["visitors"] - df["conversions"]
         return df
 
-    def fit_interaction_model(self, df: pd.DataFrame, test_cols: List[str]):
+    def run_interaction_analysis(self, df: pd.DataFrame, test_cols: List[str]) -> List[Dict[str, Any]]:
         """
-        Fits a full-factorial Logistic Regression (GLM-Binomial) model.
-
-        Formula: cbind(conversions, non_conversions) ~ Test1 * Test2 * ... * TestN
-
-        Using a two-column binomial response (successes, failures) is correct
-        for aggregated count data; it does NOT inflate the effective N the way
-        freq_weights does, so standard errors and p-values are reliable.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Output of :meth:`prepare_aggregated_format`.
-        test_cols : list[str]
-            Column names for each concurrent test.
-
-        Returns
-        -------
-        statsmodels GLMResultsWrapper
-
-        Raises
-        ------
-        ValueError
-            On invalid inputs or model fitting failure.
+        Orchestrates preparation, model fitting, and JSON-safe extraction.
+        Builds the design matrix safely using patsy to avoid formula parser bugs.
         """
         self._validate_inputs(df, test_cols)
+        processed_df = self.prepare_aggregated_format(df, test_cols)
 
-        # Two-column binomial response: shape (n_rows, 2)
-        endog = df[["conversions", "non_conversions"]].to_numpy()
+        # 1. Prepare 2D Endogenous Variable (Response)
+        endog = processed_df[["conversions", "non_conversions"]].to_numpy()
 
-        # Full factorial formula — "*" expands to all main effects + interactions
+        # 2. Build Exogenous Design Matrix via patsy
         formula_rhs = " * ".join([f"C({col})" for col in test_cols])
+        exog = patsy.dmatrix(f"~ {formula_rhs}", data=processed_df, return_type='dataframe')
 
         try:
             model = sm.GLM(
                 endog=endog,
-                exog=sm.formula.api.formulaic_matrix(f"~ {formula_rhs}", data=df),
+                exog=exog,
                 family=sm.families.Binomial(),
             ).fit()
         except Exception as e:
             raise ValueError(f"Interaction model fitting failed: {e}") from e
 
-        return model
+        # 3. Extract and parse results into JSON format
+        return self._format_summary_table(model)
 
-    def fit_interaction_model_from_formula(
-        self, df: pd.DataFrame, test_cols: List[str]
-    ):
+    def _format_summary_table(self, model) -> List[Dict[str, Any]]:
         """
-        Alternative entry point using statsmodels formula API directly.
-
-        Preferred when you want statsmodels to handle the design matrix
-        construction (handles reference-level encoding automatically).
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Output of :meth:`prepare_aggregated_format`.
-        test_cols : list[str]
-            Column names for each concurrent test.
-
-        Returns
-        -------
-        statsmodels GLMResultsWrapper
+        Parses the raw statsmodels summary into a JSON-ready list of dicts.
         """
-        self._validate_inputs(df, test_cols)
+        summary_df = model.summary2().tables[1].copy()
+        results = []
 
-        formula_rhs = " * ".join([f"C({col})" for col in test_cols])
-        formula = f"conversions + non_conversions ~ {formula_rhs}"
+        for raw_name, row in summary_df.iterrows():
+            clean_name = self._rename_coefficient(str(raw_name))
+            coef = float(row['Coef.'])
+            p_val = float(row['P>|z|'])
+            
+            # Skip the intercept/baseline conclusion as it represents the raw control state
+            conclusion = "Baseline Group" if clean_name == "Baseline (Control Group)" else self.generate_interaction_conclusion(
+                term_label=clean_name,
+                coef=coef,
+                p_value=p_val
+            )
 
-        try:
-            model = sm.formula.glm(
-                formula=formula,
-                data=df,
-                family=sm.families.Binomial(),
-            ).fit()
-        except Exception as e:
-            raise ValueError(f"Interaction model fitting failed: {e}") from e
+            results.append({
+                "term": clean_name,
+                "raw_term": str(raw_name),
+                "coefficient": coef,
+                "std_err": float(row['Std.Err.']),
+                "z_score": float(row['z']),
+                "p_value": p_val,
+                "is_significant": bool(p_val < 0.05),
+                "conclusion": conclusion
+            })
 
-        return model
-
-    @staticmethod
-    def format_summary_table(model) -> pd.DataFrame:
-        """
-        Renames raw statsmodels coefficient names into human-readable labels.
-
-        Examples
-        --------
-        ``Intercept``                               → "Baseline (Control Group)"
-        ``C(test1)[T.B]``                           → "test1 (B)"
-        ``C(test1)[T.B]:C(test2)[T.Y]``             → "test1 (B) & test2 (Y) — Clash/Synergy"
-
-        Parameters
-        ----------
-        model : statsmodels GLMResultsWrapper
-
-        Returns
-        -------
-        pd.DataFrame
-            A copy of the coefficient summary table with renamed index.
-        """
-        # .copy() prevents mutating the object held inside the model result
-        summary = model.summary2().tables[1].copy()
-
-        summary.index = summary.index.map(InteractionEngine._rename_coefficient)
-        return summary
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+        return results
 
     def _validate_inputs(self, df: pd.DataFrame, test_cols: List[str]) -> None:
         """Raises ValueError for any input that would cause a bad model fit."""
@@ -183,9 +133,7 @@ class InteractionEngine:
                 f"{2 ** len(test_cols)} terms and become numerically unstable."
             )
 
-        missing_cols = [
-            c for c in [*test_cols, "visitors", "conversions"] if c not in df.columns
-        ]
+        missing_cols = [c for c in [*test_cols, "visitors", "conversions"] if c not in df.columns]
         if missing_cols:
             raise ValueError(f"Required columns missing from dataframe: {missing_cols}")
 
@@ -196,41 +144,27 @@ class InteractionEngine:
             raise ValueError("'visitors' column contains negative values.")
 
         if (df["conversions"] > df["visitors"]).any():
-            raise ValueError(
-                "Some rows have more conversions than visitors. "
-                "Check your input data."
-            )
+            raise ValueError("Some rows have more conversions than visitors. Check your input data.")
 
         if df[test_cols].isnull().any().any():
             raise ValueError("Test variant columns contain null values.")
 
     @staticmethod
     def _rename_coefficient(name: str) -> str:
-        """
-        Converts a single statsmodels coefficient name to a readable label.
-
-        Uses a pre-compiled regex rather than chained string replacements so
-        that changes to statsmodels' formatting surface as unmatched patterns
-        (returned verbatim) rather than silently garbled names.
-        """
+        """Converts a single statsmodels coefficient name to a readable label."""
         if name == "Intercept":
             return "Baseline (Control Group)"
 
         if ":" in name:
-            # Interaction term: one part per test involved
             parts = name.split(":")
             clean_parts = []
             for part in parts:
                 m = _COEF_TERM_RE.fullmatch(part.strip())
-                clean_parts.append(
-                    f"{m.group(1)} ({m.group(2)})" if m else part.strip()
-                )
+                clean_parts.append(f"{m.group(1)} ({m.group(2)})" if m else part.strip())
             return " & ".join(clean_parts) + " — Clash/Synergy"
 
-        # Main effect term
         m = _COEF_TERM_RE.fullmatch(name.strip())
         if m:
             return f"{m.group(1)} ({m.group(2)})"
 
-        # Fallback: return verbatim so nothing silently disappears
         return name
