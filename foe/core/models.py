@@ -2,7 +2,7 @@ from enum import Enum
 from datetime import date
 from typing import List, Optional, Tuple, Dict
 from pydantic import BaseModel, Field, ConfigDict, model_validator
-from axiom.core.validators import validate_experiment_data
+from foe.core.validators import validate_experiment_data
 
 # --- Frequentist ---
 

@@ -3,9 +3,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm, beta
 from typing import List, Dict, Tuple, Union, Any
-
-# Updated imports to match our package structure
-from axiom.core.models import AlternativeHypothesis
+from foe.core.models import AlternativeHypothesis
 
 class VizEngine:
     """

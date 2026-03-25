@@ -4,7 +4,6 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from scipy.stats import shapiro, levene, kruskal, mannwhitneyu
 from pingouin import welch_anova
-# Removed scikit_posthocs for now unless you specifically need post-hoc pairs returned
 
 class ContinuousMetricEngine:
     """

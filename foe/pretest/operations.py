@@ -1,9 +1,7 @@
 import numpy as np
 from scipy.stats import norm
 from typing import List, Dict, Any
-
-# Ensure we use the centralized type-safe Enum
-from axiom.core.models import AlternativeHypothesis
+from foe.core.models import AlternativeHypothesis
 
 class PretestEngine:
     """

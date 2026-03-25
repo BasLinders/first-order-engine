@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Dict, Any, Optional
-from axiom.core.models import BusinessCaseInput
+from foe.core.models import BusinessCaseInput
 
 class BayesianEngine:
     """
