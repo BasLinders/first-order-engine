@@ -85,3 +85,4 @@ jobs:
             --entry-point=${{ matrix.module }}_handler \
             --trigger-http \
             --allow-unauthenticated
+            --memory=512MB
