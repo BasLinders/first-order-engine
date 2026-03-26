@@ -5,10 +5,11 @@ from foe.core.models import ExperimentInput
 from foe.bayesian.operations import BayesianEngine
 
 @functions_framework.http
-def frequentist_handler(request):
+def bayesian_handler(request):
     """
-    HTTP Cloud Function entry point for Frequentist A/B Analysis.
+    HTTP Cloud Function entry point for Bayesian A/B Analysis.
     Expects a JSON payload matching the ExperimentInput schema.
+    Computes Probability of Being Best, Expected Loss, and Lift Distributions.
     """
     
     # Handle CORS (Essential for Streamlit or Looker integrations)
@@ -34,7 +35,7 @@ def frequentist_handler(request):
 
         # Engine Execution
         engine = BayesianEngine()
-        results = engine.run_synthesis(input_data)
+        results = engine.run_bayesian_analysis(input_data)
 
         # Serialization
         payload = [r.model_dump() for r in results]
