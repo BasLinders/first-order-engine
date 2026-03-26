@@ -35,7 +35,7 @@ def bayesian_handler(request):
 
         # Engine Execution
         engine = BayesianEngine()
-        results = engine.run_bayesian_analysis(input_data)
+        results = engine.run_probability_analysis(input_data)
 
         # Serialization
         payload = [r.model_dump() for r in results]
