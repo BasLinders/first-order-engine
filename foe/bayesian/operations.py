@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Dict, Any, Optional
-from foe.core.models import BusinessCaseInput
+from foe.core.models import BusinessCaseInput, BayesianResult, ExperimentInput
 
 class BayesianEngine:
     """
@@ -30,7 +30,7 @@ class BayesianEngine:
 
         if prob_beat_control >= 0.95:
             return (
-                f"Strong Winner: '{variant_name}' has a {prob_beat_control:.1%} probability "
+                f"Clear Winner: '{variant_name}' has a {prob_beat_control:.1%} probability "
                 f"of outperforming the control. Rolling this out carries minimal expected risk "
                 f"({risk_str}) with a projected upside of {uplift_str} over the next {projection_period} days."
             )
@@ -64,47 +64,62 @@ class BayesianEngine:
         """
         return a_prior + conversions, b_prior + (visitors - conversions)
 
-    def run_probability_analysis(
-        self, 
-        visitors: List[int], 
-        conversions: List[int], 
+    def _sample_posteriors(
+        self,
+        visitors: List[int],
+        conversions: List[int],
         n_samples: int = 100000,
-        return_samples: bool = False
-    ) -> Dict[str, Any]:
-        """
-        Calculates Probability of Being Best using vectorized Monte Carlo sampling.
-        """
-        num_variants = len(visitors)
-        if num_variants == 0:
-            return {"prob_being_best": [], "samples": np.array([]) if return_samples else None}
-
-        # Vectorize parameter calculation
-        visitors_arr = np.array(visitors)
-        conversions_arr = np.array(conversions)
-        
-        # Using a default flat prior (1,1) if not specified
+    ) -> np.ndarray:
+        """Returns a (num_variants, n_samples) array of Beta posterior samples."""
+        visitors_arr = np.array(visitors, dtype=float)
+        conversions_arr = np.array(conversions, dtype=float)
         a_post = 1.0 + conversions_arr
         b_post = 1.0 + (visitors_arr - conversions_arr)
-        
-        # Vectorized Sampling using isolated RNG
-        samples = self.rng.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(num_variants, n_samples))
-        
-        # Identify the index of the max value across variants for each sample
+        return self.rng.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(len(visitors), n_samples))
+
+    def run_probability_analysis(
+        self,
+        data: ExperimentInput,
+        n_samples: int = 100000,
+    ) -> List[BayesianResult]:
+        """
+        Calculates Probability of Being Best using vectorized Monte Carlo sampling.
+        Returns one BayesianResult per challenger variant.
+        """
+        visitors = data.visitors
+        conversions = data.conversions
+        labels = data.labels or [f"Variant {i}" for i in range(len(visitors))]
+
+        samples = self._sample_posteriors(visitors, conversions, n_samples)
         winner_indices = np.argmax(samples, axis=0)
-        
-        # Calculate probabilities of being best
-        counts = np.bincount(winner_indices, minlength=num_variants)
-        prob_being_best = (counts / n_samples).tolist()
-        
-        result = {
-            "prob_being_best": prob_being_best
-        }
-        
-        # Only attach the massive array if explicitly requested by another internal function
-        if return_samples:
-            result["samples"] = samples
-            
-        return result
+        counts = np.bincount(winner_indices, minlength=len(visitors))
+        prob_best_overall = counts / n_samples
+
+        control_samples = samples[0]
+        results = []
+        for i in range(1, len(visitors)):
+            challenger_samples = samples[i]
+            prob_being_best = float(prob_best_overall[i])
+            prob_beat_control = float((challenger_samples > control_samples).mean())
+            expected_uplift = float(np.mean(np.maximum(challenger_samples - control_samples, 0)))
+            expected_loss = float(np.mean(np.maximum(control_samples - challenger_samples, 0)))
+
+            conclusion = self.generate_bayesian_conclusion(
+                variant_name=labels[i],
+                prob_beat_control=prob_beat_control,
+                expected_uplift=expected_uplift,
+                expected_risk=expected_loss,
+                projection_period=30,
+            )
+            results.append(BayesianResult(
+                variant_label=labels[i],
+                control_label=labels[0],
+                prob_being_best=prob_being_best,
+                expected_loss=expected_loss,
+                conclusion=conclusion,
+            ))
+
+        return results
 
     def run_monetary_projection(
         self,
@@ -122,10 +137,7 @@ class BayesianEngine:
         if biz_case.runtime_days <= 0 or num_variants < 2 or len(variant_labels) != num_variants:
             return []
 
-        analysis = self.run_probability_analysis(
-            visitors, conversions, n_samples=n_simulations, return_samples=True
-        )
-        samples = analysis['samples']
+        samples = self._sample_posteriors(visitors, conversions, n_simulations)
         
         daily_vol_samples = (samples * np.array(visitors)[:, np.newaxis]) / biz_case.runtime_days
         

@@ -53,6 +53,16 @@ class FrequentistResult(BaseModel):
 
 # --- Bayesian ---
 
+class BayesianResult(BaseModel):
+    """Standardized output for a single Bayesian variant comparison."""
+    model_config = ConfigDict(frozen=True)
+
+    variant_label: str
+    control_label: str
+    prob_being_best: float
+    expected_loss: float
+    conclusion: str
+
 class BusinessCaseInput(BaseModel):
     """Inputs for Bayesian risk and business case assessment."""
     model_config = ConfigDict(frozen=True)

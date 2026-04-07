@@ -38,7 +38,7 @@ def frequentist_handler(request):
 
         # Engine Execution
         engine = FrequentistEngine()
-        results = engine.run_ztest(input_data)
+        results = engine.run_synthesis(input_data)
 
         # Serialization
         # Convert the list of Pydantic 'FrequentistResult' objects into JSON-safe dicts

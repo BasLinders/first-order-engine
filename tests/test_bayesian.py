@@ -46,26 +46,26 @@ def test_flat_test_risk_assessment(engine):
 
 def test_business_case_revenue_projection(engine):
     """
-    Test that revenue projections correctly compound 
+    Test that revenue projections correctly compound
     based on AOV and conversion rate lift.
     """
-    # 1000 visitors/day baseline
-    data = ExperimentInput(
-        visitors=[1000, 1000],
-        conversions=[100, 110] # 10% lift in CR
-    )
-    
+    visitors = [1000, 1000]
+    conversions = [100, 110]  # 10% lift in CR
+    labels = ["Control", "Challenger"]
+    data = ExperimentInput(visitors=visitors, conversions=conversions, labels=labels)
+
     # $50 AOV vs $60 AOV
     biz_case = BusinessCaseInput(
         aovs={"Control": 50.0, "Challenger": 60.0},
-        runtime_days=30, # Data collected over a month
-        projection_period=180 # Project 6 months forward
+        runtime_days=30,       # Data collected over a month
+        projection_period=180  # Project 6 months forward
     )
-    
-    # Assuming run_business_synthesis exists in your engine
-    projection = engine.run_monetary_projection(data, biz_case)
-    
-    # Check that the projected revenue is greater than the baseline
-    # (Higher CR * Higher AOV should result in significant projected gains)
-    assert projection['projected_incremental_revenue'] > 0
-    assert "Cumulative Growth" in projection['summary']
+
+    prob_results = engine.run_probability_analysis(data)
+    prob_best_overall = [1.0 - prob_results[0].prob_being_best, prob_results[0].prob_being_best]
+
+    results = engine.run_monetary_projection(visitors, conversions, biz_case, prob_best_overall, labels)
+
+    assert len(results) == 1
+    assert results[0]['expected_uplift'] > 0
+    assert results[0]['expected_total_contribution'] > 0

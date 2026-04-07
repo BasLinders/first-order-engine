@@ -1,0 +1,4 @@
+foe.egg*
+*pycache*
+.DS_Store
+*.egg-info

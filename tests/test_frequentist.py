@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from pydantic import ValidationError
 from foe.frequentist.operations import FrequentistEngine
 from foe.core.models import ExperimentInput, AlternativeHypothesis
 
@@ -77,7 +78,7 @@ def test_input_validation_integration():
             conversions=[150, 50] # Impossible!
         )
 
-    with pytest.raises(ValueError, match="at least two variants"):
+    with pytest.raises(ValidationError, match="at least 2 items"):
         ExperimentInput(
             visitors=[100],
             conversions=[10]

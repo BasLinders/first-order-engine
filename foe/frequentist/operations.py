@@ -4,8 +4,8 @@ import statsmodels.formula.api as smf
 from scipy.stats import norm
 from typing import List, Optional, Tuple, Dict, Any
 
-# Updated import path based on our earlier root folder rename
-from axiom.core.models import AlternativeHypothesis
+from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
+from foe.frequentist.confidence import compute_interval_difference
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
     """Calculates adjusted alpha for multiple comparisons (A/B/n)."""
@@ -37,13 +37,16 @@ class FrequentistEngine:
                 "conclude that this variant had a meaningful impact."
             )
 
-        direction = "positive" if relative_lift > 0 else "negative"
-        action = "a clear winner" if relative_lift > 0 else "performing worse than control"
-        
+        if relative_lift > 0:
+            return (
+                f"Significant Positive Impact: '{variant_name}' is a clear winner "
+                f"with an observed relative impact of {relative_lift:+.2%}. "
+                "You can confidently roll this out."
+            )
         return (
-            f"Significant {direction} result: '{variant_name}' is {action} "
+            f"Significant Negative Impact: '{variant_name}' is performing worse than control "
             f"with an observed relative impact of {relative_lift:+.2%}. "
-            f"You can confidently {'roll this out' if relative_lift > 0 else 'discard this variant'}."
+            "You can confidently discard this variant."
         )
 
     @staticmethod
@@ -181,3 +184,44 @@ class FrequentistEngine:
         p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
         
         return float(np.mean(p_values < alpha))
+
+    def run_synthesis(self, data: ExperimentInput) -> List[FrequentistResult]:
+        """
+        High-level entry point: takes a validated ExperimentInput and returns
+        a FrequentistResult for each challenger vs control.
+        """
+        labels = data.labels or [f"Variant {i}" for i in range(len(data.visitors))]
+        p_ctrl = data.conversions[0] / data.visitors[0]
+        n_ctrl = data.visitors[0]
+        alpha = 1.0 - data.confidence_level
+
+        results = []
+        for i in range(1, len(data.visitors)):
+            n_chal = data.visitors[i]
+            p_chal = data.conversions[i] / n_chal
+            diff = p_chal - p_ctrl
+            uplift = diff / p_ctrl if p_ctrl != 0 else 0.0
+
+            # Unpooled SE, scaled by reduction_factor (CUPED adjustment)
+            se_diff = (
+                p_ctrl * (1 - p_ctrl) / n_ctrl + p_chal * (1 - p_chal) / n_chal
+            ) ** 0.5 * data.reduction_factor
+
+            p_value = self.run_ztest(diff, se_diff, data.alternative)
+            is_sig = bool(p_value < alpha)
+            ci = compute_interval_difference(diff, se_diff, alpha)
+            conclusion = self.generate_conclusion_statement(labels[i], is_sig, uplift)
+
+            results.append(FrequentistResult(
+                variant_label=labels[i],
+                control_label=labels[0],
+                conversion_rate=p_chal,
+                standard_error=se_diff,
+                p_value=p_value,
+                uplift=uplift,
+                is_significant=is_sig,
+                ci_diff=ci,
+                conclusion=conclusion,
+            ))
+
+        return results
