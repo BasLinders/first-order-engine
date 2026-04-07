@@ -25,7 +25,7 @@ first-order-engine/
 │       └── deploy.yml          # Parallel Cloud Function deployment on merge
 │
 ├── foe/                        # Main importable package
-│   ├── __init__.py             # Exposes top-level API
+│   ├── __init__.py
 │   │
 │   ├── core/                   # Shared primitives and Pydantic models
 │   │   ├── models.py           # ExperimentInput, FrequentistResult, etc.
