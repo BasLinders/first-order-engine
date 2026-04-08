@@ -42,7 +42,7 @@ class BehavioralEngine:
         df: pd.DataFrame,
         kpi: str,
         threshold: float = 3.0,
-        large_file_limit: int = 10000,
+        large_file_limit: int = 10000
     ) -> List[bool]:
         """
         Identifies outliers using IQR (Fast/Large) or OLS Residuals (Precise/Small).
