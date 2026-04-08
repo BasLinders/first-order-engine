@@ -31,7 +31,7 @@ class BayesianEngine:
 
         if prob_beat_control >= 0.95:
             return (
-                f"Clear Winner: '{variant_name}' has a {prob_beat_control:.1%} probability "
+                f"Strong Winner: '{variant_name}' has a {prob_beat_control:.1%} probability "
                 f"of outperforming the control. Rolling this out carries minimal expected risk "
                 f"({risk_str}) with a projected upside of {uplift_str} over the next {projection_period} days."
             )
