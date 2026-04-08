@@ -20,7 +20,7 @@ class BayesianEngine:
         prob_beat_control: float,
         expected_uplift: float,
         expected_risk: float,
-        projection_period: int,
+        projection_period: int
     ) -> str:
         """
         Translates Bayesian risk distributions into clear, UI-ready business text.
