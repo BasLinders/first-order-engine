@@ -187,5 +187,5 @@ class BehavioralEngine:
                 lift=lift,
                 p_value=float(p_val),
                 challenger_label=challenger_label,
-            ),
+            )
         }
