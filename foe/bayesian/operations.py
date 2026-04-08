@@ -5,7 +5,7 @@ from foe.core.models import BusinessCaseInput, BayesianResult, ExperimentInput
 
 class BayesianEngine:
     """
-    The Axiom Bayesian Engine handles Beta-Binomial posterior updates,
+    The FOE Bayesian Engine handles Beta-Binomial posterior updates,
     Monte Carlo simulations for 'Probability of Being Best', and
     Decision Theory-based monetary risk projections.
     """
