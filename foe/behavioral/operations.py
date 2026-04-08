@@ -18,7 +18,7 @@ class BehavioralEngine:
         is_significant: bool,
         lift: float,
         p_value: float,
-        challenger_label: str,
+        challenger_label: str
     ) -> str:
         """Generates a definitive UI statement for the Welch's t-test results."""
         if not is_significant:
