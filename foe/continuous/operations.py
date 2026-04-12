@@ -140,7 +140,7 @@ class ContinuousMetricEngine:
             
         return posthoc_results
 
-    def run_comparison_suite(self, df: pd.DataFrame, kpi: str) -> dict:
+    def run_comparison_suite(self, df: pd.DataFrame, kpi: str, approach: str = "Heuristic (Auto-detect)", control_label: str = None) -> dict:
         """
         The core decision engine for choosing the right statistical test.
         """
@@ -153,56 +153,81 @@ class ContinuousMetricEngine:
         if num_groups < 2:
             return {"error": "Not enough variants to compare."}
 
-        # 2. Assumption: Normality of Residuals
-        model = smf.ols(f'{kpi} ~ C(experience_variant_label)', data=df).fit()
-        
-        # Guard against Shapiro limit (N > 5000)
-        resid_sample = model.resid.dropna()
-        if len(resid_sample) > 5000:
-            np.random.seed(42) # Safe here as it's purely for diagnostic sampling, not test math
-            resid_sample = np.random.choice(resid_sample, 5000, replace=False)
-            
-        _, p_norm = shapiro(resid_sample)
-        is_normal = bool(p_norm >= 0.05)
-        
-        # 3. Assumption: Homogeneity of Variance
-        _, p_var = levene(*groups)
-        is_homogeneous = bool(p_var >= 0.05)
-        
         # Convert Pandas groupby agg to a nested dictionary for JSON serialization
         summary_df = df.groupby('experience_variant_label', observed=True)[kpi].agg(['mean', 'std', 'count'])
         summary_stats = summary_df.reset_index().to_dict(orient='records')
 
         results = {
             "kpi": kpi,
-            "is_normal": is_normal,
-            "is_homogeneous": is_homogeneous,
-            "summary_stats": summary_stats
+            "approach_used": approach,
+            "summary_stats": summary_stats,
+            "posthoc_results": None
         }
 
-        # 4. Statistical Decision Tree
-        if is_normal and is_homogeneous:
-            results["test_name"] = "Standard ANOVA"
-            anova_results = sm.stats.anova_lm(model, typ=2)
-            results["p_value"] = float(anova_results['PR(>F)'].iloc[0])
+        # --- PATH A: GAMMA GLM ---
+        if approach == "Gamma GLM (Best for Revenue/Items)":
+            results["is_normal"] = False
+            results["is_homogeneous"] = False
+            results["test_name"] = "Gamma GLM (Likelihood Ratio Test)"
             
-        elif is_normal and not is_homogeneous:
-            results["test_name"] = "Welch's ANOVA"
-            aov = welch_anova(data=df, dv=kpi, between='experience_variant_label')
-            results["p_value"] = float(aov['p-unc'].iloc[0])
+            # 1. Null Model (Overall mean)
+            global_mean = df[kpi].dropna().mean()
+            null_log_lik = np.sum(stats.gamma.logpdf(df[kpi].dropna(), a=1, scale=global_mean))
             
-        else: 
-            # Non-Normal -> Non-parametric fallback
-            if num_groups > 2:
-                results["test_name"] = "Kruskal-Wallis"
-                _, p = kruskal(*groups)
-                results["p_value"] = float(p)
-            else:
-                results["test_name"] = "Mann-Whitney U"
-                _, p = mannwhitneyu(groups[0], groups[1], alternative='two-sided')
-                results["p_value"] = float(p)
+            # 2. Alternative Model (Variant means)
+            alt_log_lik = 0
+            for group_data in groups:
+                alt_log_lik += np.sum(stats.gamma.logpdf(group_data, a=1, scale=group_data.mean()))
+            
+            # 3. Global LRT
+            lrt_stat = 2 * (alt_log_lik - null_log_lik)
+            df_model = num_groups - 1
+            p_value = stats.chi2.sf(lrt_stat, df=df_model)
+            results["p_value"] = float(p_value)
+            results["is_significant"] = bool(p_value < 0.05)
+            
+            # 4. Post-Hoc if required
+            if results["is_significant"] and num_groups > 2 and control_label:
+                results["posthoc_results"] = self.run_gamma_posthoc(df, kpi, 'experience_variant_label', control_label)
 
-        results["is_significant"] = bool(results["p_value"] < 0.05)
+        # --- PATH B: HEURISTIC ---
+        else:
+            model = smf.ols(f'{kpi} ~ C(experience_variant_label)', data=df).fit()
+            resid_sample = model.resid.dropna()
+            
+            if len(resid_sample) > 5000:
+                np.random.seed(42)
+                resid_sample = np.random.choice(resid_sample, 5000, replace=False)
+                
+            _, p_norm = shapiro(resid_sample)
+            results["is_normal"] = bool(p_norm >= 0.05)
+            
+            _, p_var = levene(*groups)
+            results["is_homogeneous"] = bool(p_var >= 0.05)
+            
+            if results["is_normal"] and results["is_homogeneous"]:
+                results["test_name"] = "Standard ANOVA"
+                anova_results = sm.stats.anova_lm(model, typ=2)
+                results["p_value"] = float(anova_results['PR(>F)'].iloc[0])
+                
+            elif results["is_normal"] and not results["is_homogeneous"]:
+                results["test_name"] = "Welch's ANOVA"
+                aov = welch_anova(data=df, dv=kpi, between='experience_variant_label')
+                results["p_value"] = float(aov['p-unc'].iloc[0])
+                
+            else: 
+                if num_groups > 2:
+                    results["test_name"] = "Kruskal-Wallis"
+                    _, p = kruskal(*groups)
+                    results["p_value"] = float(p)
+                else:
+                    results["test_name"] = "Mann-Whitney U"
+                    _, p = mannwhitneyu(groups[0], groups[1], alternative='two-sided')
+                    results["p_value"] = float(p)
+
+            results["is_significant"] = bool(results["p_value"] < 0.05)
+
+        # Finalize Conclusion
         results["conclusion"] = self.generate_continuous_conclusion(
             kpi=kpi, 
             is_significant=results["is_significant"], 
