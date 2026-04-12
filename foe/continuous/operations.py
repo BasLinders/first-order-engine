@@ -3,6 +3,8 @@ import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from scipy.stats import shapiro, levene, kruskal, mannwhitneyu
+from scipy.optimize import minimize
+from scipy import stats
 from pingouin import welch_anova
 
 class ContinuousMetricEngine:
@@ -72,6 +74,71 @@ class ContinuousMetricEngine:
         
         clipped = series.clip(lower, upper)
         return clipped.tolist(), float(lower), float(upper)
+
+    @staticmethod
+    def neg_log_likelihood(params, data):
+        """Negative log-likelihood function for the Gamma distribution."""
+        k, theta = params
+        if k <= 0 or theta <= 0:
+            return np.inf
+        return -np.sum(stats.gamma.logpdf(data, a=k, scale=theta))
+
+    @staticmethod
+    def fit_gamma(data) -> tuple[float, float, float]:
+        """Fits a Gamma model to the data using MLE. Returns k, theta, and log-likelihood."""
+        data_clean = data.dropna()
+        # Initial guess using Method of Moments
+        mean_val = data_clean.mean()
+        var_val = data_clean.var()
+        initial_params = [mean_val**2 / var_val, var_val / mean_val]
+        
+        result = minimize(
+            ContinuousMetricEngine.neg_log_likelihood, 
+            initial_params, 
+            args=(data_clean,), 
+            bounds=((1e-5, None), (1e-5, None))
+        )
+        k, theta = result.x
+        log_lik = -result.fun
+        return float(k), float(theta), float(log_lik)
+
+    @staticmethod
+    def run_gamma_posthoc(df: pd.DataFrame, kpi: str, group_col: str, control_label: str) -> list[dict]:
+        """Runs pairwise LRTs against a control variant, returning JSON-serializable results."""
+        variants = [v for v in df[group_col].unique() if v != control_label]
+        posthoc_results = []
+        num_comparisons = len(variants)
+        
+        for variant in variants:
+            pair_df = df[df[group_col].isin([control_label, variant])]
+            
+            # 1. Fit Null Model (Single mean for both)
+            null_mean = pair_df[kpi].mean()
+            null_log_lik = np.sum(stats.gamma.logpdf(pair_df[kpi], a=1, scale=null_mean)) 
+            
+            # 2. Fit Alternative Model (Separate means)
+            ctrl_data = pair_df[pair_df[group_col] == control_label][kpi]
+            var_data = pair_df[pair_df[group_col] == variant][kpi]
+            
+            alt_log_lik = (
+                np.sum(stats.gamma.logpdf(ctrl_data, a=1, scale=ctrl_data.mean())) + 
+                np.sum(stats.gamma.logpdf(var_data, a=1, scale=var_data.mean()))
+            )
+            
+            # 3. Likelihood Ratio Test
+            lrt_stat = 2 * (alt_log_lik - null_log_lik)
+            p_val = stats.chi2.sf(lrt_stat, df=1)
+            adj_p = min(p_val * num_comparisons, 1.0)
+            
+            posthoc_results.append({
+                "comparison": f"{variant} vs {control_label}",
+                "lrt_stat": float(lrt_stat),
+                "p_value": float(p_val),
+                "p_adj_bonferroni": float(adj_p),
+                "is_significant": bool(adj_p < 0.05)
+            })
+            
+        return posthoc_results
 
     def run_comparison_suite(self, df: pd.DataFrame, kpi: str) -> dict:
         """
