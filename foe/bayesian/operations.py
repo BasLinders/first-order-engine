@@ -4,7 +4,7 @@ from foe.core.models import BusinessCaseInput
 
 class BayesianEngine:
     """
-    The Axiom Bayesian Engine handles Beta-Binomial posterior updates, 
+    The FOE Bayesian Engine handles Beta-Binomial posterior updates, 
     Monte Carlo simulations for 'Probability of Being Best', and 
     Decision Theory-based monetary risk projections.
     """
@@ -69,7 +69,9 @@ class BayesianEngine:
         visitors: List[int], 
         conversions: List[int], 
         n_samples: int = 100000,
-        return_samples: bool = False
+        return_samples: bool = False,
+        prior_alphas: Optional[List[float]] = None,
+        prior_betas: Optional[List[float]] = None
     ) -> Dict[str, Any]:
         """
         Calculates Probability of Being Best using vectorized Monte Carlo sampling.
@@ -81,10 +83,15 @@ class BayesianEngine:
         # Vectorize parameter calculation
         visitors_arr = np.array(visitors)
         conversions_arr = np.array(conversions)
+
+        # Determine which priors to use
+        # If no priors provided, create an array of 1.0s (uninformed)
+        a_priors = np.array(prior_alphas) if prior_alphas else np.ones(num_variants)
+        b_priors = np.array(prior_betas) if prior_betas else np.ones(num_variants)
         
-        # Using a default flat prior (1,1) if not specified
-        a_post = 1.0 + conversions_arr
-        b_post = 1.0 + (visitors_arr - conversions_arr)
+        # Calculate posteriors
+        a_post = a_priors + conversions_arr
+        b_post = b_priors + (visitors_arr - conversions_arr)
         
         # Vectorized Sampling using isolated RNG
         samples = self.rng.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(num_variants, n_samples))
