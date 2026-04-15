@@ -23,6 +23,11 @@ class ExperimentInput(BaseModel):
     reduction_factor: float = Field(1.0, description="CUPED adjustment factor")
     labels: Optional[List[str]] = Field(None, description="Names of the variants (e.g., ['Control', 'Treatment'])")
 
+    # Informed priors if present
+    prior_alphas: Optional[List[float]] = None
+    prior_betas: Optional[List[float]] = None
+    biz_case: Optional[BusinessCaseInput] = None
+
     @model_validator(mode='after')
     def check_statistical_soundness(self) -> 'ExperimentInput':
         # ValueError is converted to clean 422 API error.
@@ -61,8 +66,6 @@ class BusinessCaseInput(BaseModel):
     aovs: Dict[str, float] = Field(..., description="Mapping of variant labels to Average Order Value")
     runtime_days: int = Field(..., gt=0)
     projection_period: int = Field(183, gt=0, description="Projection period in days (6 months default)")
-    alpha_prior: float = Field(1.0, gt=0.0)
-    beta_prior: float = Field(1.0, gt=0.0)
 
 # --- Sequential ---
 
