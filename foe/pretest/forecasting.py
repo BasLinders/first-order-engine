@@ -14,7 +14,7 @@ class ForecastingEngine:
         total_expected_visitors: float,
         total_expected_conversions: float,
         periods: int,
-        interval: float,
+        interval: float
     ) -> str:
         """
         Generates a UI-friendly summary of the forecasted traffic.
@@ -67,7 +67,7 @@ class ForecastingEngine:
                 yearly_seasonality=True,
                 weekly_seasonality=True,
                 daily_seasonality=False,
-                interval_width=interval,
+                interval_width=interval
             )
 
             train_df = df[["ds", col]].rename(columns={col: "y"})
@@ -87,7 +87,7 @@ class ForecastingEngine:
             results["visitors"],
             results["conversions"],
             on="ds",
-            suffixes=("_vis", "_conv"),
+            suffixes=("_vis", "_conv")
         )
 
         # Clip negative predictions (you can't have negative visitors)
@@ -111,6 +111,6 @@ class ForecastingEngine:
                 total_expected_visitors=total_vis,
                 total_expected_conversions=total_conv,
                 periods=periods,
-                interval=interval,
+                interval=interval
             ),
         }
