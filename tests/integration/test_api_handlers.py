@@ -18,7 +18,7 @@ class TestAPIHandlers:
             "visitors": [1000, 1000],
             "conversions": [100, 150],
             "labels": ["Control", "Test"],
-            "confidence_level": 0.95,
+            "confidence_level": 0.95
         }
 
         mock_request = MagicMock()
