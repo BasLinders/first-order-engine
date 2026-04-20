@@ -20,7 +20,7 @@ def frequentist_handler(request):
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "POST",
             "Access-Control-Allow-Headers": "Content-Type",
-            "Access-Control-Allow-Max-Age": "3600",
+            "Access-Control-Allow-Max-Age": "3600"
         }
         return ("", 204, headers)
 
@@ -34,7 +34,7 @@ def frequentist_handler(request):
                 {"error": "Bad Request", "message": "Missing or invalid JSON payload"}
             ),
             400,
-            headers,
+            headers
         )
 
     try:
@@ -59,11 +59,11 @@ def frequentist_handler(request):
             jsonify(
                 {
                     "error": "Validation Error",
-                    "details": e.errors(include_url=False, include_context=False),
+                    "details": e.errors(include_url=False, include_context=False)
                 }
             ),
             422,
-            headers,
+            headers
         )
 
     except Exception as e:
@@ -71,5 +71,5 @@ def frequentist_handler(request):
         return (
             jsonify({"error": "Internal Engine Error", "message": str(e)}),
             500,
-            headers,
+            headers
         )
