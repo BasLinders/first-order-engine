@@ -16,7 +16,7 @@ def test_probability_of_being_best(engine):
     data = ExperimentInput(
         visitors=[1000, 1000],
         conversions=[50, 100],  # 5% vs 10%
-        labels=["Control", "Challenger"],
+        labels=["Control", "Challenger"]
     )
 
     # Run analysis
@@ -59,13 +59,13 @@ def test_business_case_revenue_projection(engine):
     biz_case = BusinessCaseInput(
         aovs={"Control": 50.0, "Challenger": 60.0},
         runtime_days=30,  # Data collected over a month
-        projection_period=180,  # Project 6 months forward
+        projection_period=180  # Project 6 months forward
     )
 
     prob_results = engine.run_probability_analysis(data)
     prob_best_overall = [
         1.0 - prob_results[0].prob_being_best,
-        prob_results[0].prob_being_best,
+        prob_results[0].prob_being_best
     ]
 
     results = engine.run_monetary_projection(
