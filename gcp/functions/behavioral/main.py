@@ -13,8 +13,8 @@ def behavioral_handler(request):
             {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
         )
 
     headers = {"Access-Control-Allow-Origin": "*"}
@@ -36,5 +36,5 @@ def behavioral_handler(request):
         return (
             jsonify({"error": "Internal Engine Error", "message": str(e)}),
             500,
-            headers,
+            headers
         )
