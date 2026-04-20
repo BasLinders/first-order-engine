@@ -153,7 +153,7 @@ class ContinuousMetricEngine:
             kpi=kpi,
             is_significant=results["is_significant"],
             test_used=results["test_name"],
-            p_value=results["p_value"],
+            p_value=results["p_value"]
         )
 
         return results
