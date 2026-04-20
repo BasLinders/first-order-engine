@@ -19,10 +19,15 @@ def test_probability_of_being_best(engine):
     )
     
     # Run analysis
-    results = engine.run_probability_analysis(data)
-    challenger = results[0]
+    results = engine.run_probability_analysis(
+        visitors=data.visitors,
+        conversions=data.conversions
+    )
+    challenger_pbb = results["prob_being_best"][1]
+    challenger_loss = results["expected_loss"][1]
     
-    assert challenger.prob_being_best > 0.99
+    assert challenger_pbb > 0.99
+    assert challenger_loss < 0.001
     assert "Clear Winner" in challenger.conclusion
     assert challenger.expected_loss < 0.001 # Minimal risk in rolling this out
 
@@ -37,11 +42,15 @@ def test_flat_test_risk_assessment(engine):
         labels=["Control", "Variant"]
     )
     
-    results = engine.run_probability_analysis(data)
+    results = engine.run_probability_analysis(
+        visitors=data.visitors,
+        conversions=data.conversions
+    )
     variant = results[0]
     
     # Near 50%
-    assert 0.45 <= variant.prob_being_best <= 0.55
+    for pbb in results["prob_being_best"]:
+        assert 0.45 <= pbb <= 0.55
     assert "Inconclusive" in variant.conclusion
 
 def test_business_case_revenue_projection(engine):
