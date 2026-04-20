@@ -122,7 +122,7 @@ class InteractionEngine:
                     "z_score": float(row["z"]),
                     "p_value": p_val,
                     "is_significant": bool(p_val < 0.05),
-                    "conclusion": conclusion,
+                    "conclusion": conclusion
                 }
             )
 
