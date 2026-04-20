@@ -15,8 +15,8 @@ def sequential_handler(request):
             {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
         )
 
     headers = {"Access-Control-Allow-Origin": "*"}
@@ -39,11 +39,11 @@ def sequential_handler(request):
         return (
             jsonify({"error": "Validation Error", "details": e.errors()}),
             422,
-            headers,
+            headers
         )
     except Exception as e:
         return (
             jsonify({"error": "Internal Engine Error", "message": str(e)}),
             500,
-            headers,
+            headers
         )
