@@ -38,7 +38,7 @@ class SRMEngine:
                 "p_value": 1.0,
                 "is_mismatch": False,
                 "severity": 0.0,
-                "conclusion": "Invalid data: Total visitors or expected weights sum to zero.",
+                "conclusion": "Invalid data: Total visitors or expected weights sum to zero."
             }
 
         expected_counts = [total * (p / sum(expected)) for p in expected]
@@ -57,7 +57,7 @@ class SRMEngine:
             "severity": float(severity),
             "conclusion": SRMEngine.generate_srm_conclusion(
                 is_mismatch, float(p_val), float(severity)
-            ),
+            )
         }
 
     def diagnose_segments(
@@ -66,7 +66,7 @@ class SRMEngine:
         dimensions: List[str],
         variant_col: str,
         expected_ratio: List[float],
-        alpha: float = 0.01,
+        alpha: float = 0.01
     ) -> List[Dict[str, Any]]:
         """
         Runs SRM checks across multiple dimensions to find the root cause.
@@ -97,7 +97,7 @@ class SRMEngine:
                             "p_value": res["p_value"],
                             "severity": res["severity"],
                             "status": "FAIL (SRM)" if res["is_mismatch"] else "PASS",
-                            "conclusion": f"Segment '{seg}' in '{dim}' {'failed' if res['is_mismatch'] else 'passed'} SRM check.",
+                            "conclusion": f"Segment '{seg}' in '{dim}' {'failed' if res['is_mismatch'] else 'passed'} SRM check."
                         }
                     )
 
@@ -134,5 +134,5 @@ class SRMEngine:
                 f"Sensitivity Threshold: For a total sample size of {total_n:,} and a target allocation of {target_pct:.1%}, "
                 f"any observed traffic split outside the range of {lower_bound:.2%} to {upper_bound:.2%} "
                 "will trigger an SRM alert."
-            ),
+            )
         }
