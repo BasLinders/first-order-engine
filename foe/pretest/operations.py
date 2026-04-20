@@ -16,7 +16,7 @@ class PretestEngine:
         num_variants: int,
         mde_relative: float,
         power: float,
-        alpha: float,
+        alpha: float
     ) -> str:
         """Generates a definitive UI string for sample size requirements."""
         total_n = n_per_variant * num_variants
@@ -82,7 +82,7 @@ class PretestEngine:
         baseline_conversions: int,
         risk_pct: float,
         trust_pct: float,
-        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
     ) -> Dict[str, Any]:
         """Calculates a 6-week MDE projection for static traffic."""
         if baseline_visitors <= 0 or baseline_conversions < 0:
@@ -97,7 +97,7 @@ class PretestEngine:
         if baseline_rate == 0:
             return {
                 "table": [],
-                "conclusion": "Baseline conversion rate cannot be zero.",
+                "conclusion": "Baseline conversion rate cannot be zero."
             }
 
         # Assumes baseline_visitors represents 1 week of total traffic
@@ -113,7 +113,7 @@ class PretestEngine:
                 {
                     "Week": int(week),
                     "Visitors_Per_Variant": int(n),
-                    "MDE": float(mde_rel),
+                    "MDE": float(mde_rel)
                 }
             )
 
@@ -130,7 +130,7 @@ class PretestEngine:
         num_variants: int,
         alpha: float = 0.05,
         power: float = 0.80,
-        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
     ) -> Dict[str, Any]:
         """
         Calculates required sample size per variant using pooled variance.
@@ -166,6 +166,6 @@ class PretestEngine:
                 num_variants=num_variants,
                 mde_relative=mde_relative,
                 power=power,
-                alpha=alpha,
-            ),
+                alpha=alpha
+            )
         }
