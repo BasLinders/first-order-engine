@@ -12,8 +12,8 @@ def srm_handler(request):
             {
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "POST",
-                "Access-Control-Allow-Headers": "Content-Type",
-            },
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
         )
 
     headers = {"Access-Control-Allow-Origin": "*"}
@@ -26,7 +26,7 @@ def srm_handler(request):
         return (
             jsonify({"error": "Missing required fields: observed, expected"}),
             400,
-            headers,
+            headers
         )
 
     try:
@@ -37,5 +37,5 @@ def srm_handler(request):
         return (
             jsonify({"error": "Internal Engine Error", "message": str(e)}),
             500,
-            headers,
+            headers
         )
