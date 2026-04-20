@@ -57,7 +57,7 @@ def test_one_sided_hypothesis(engine):
         ExperimentInput(
             visitors=visitors,
             conversions=conversions,
-            alternative=AlternativeHypothesis.TWO_SIDED,
+            alternative=AlternativeHypothesis.TWO_SIDED
         )
     )[0]
 
@@ -65,7 +65,7 @@ def test_one_sided_hypothesis(engine):
         ExperimentInput(
             visitors=visitors,
             conversions=conversions,
-            alternative=AlternativeHypothesis.GREATER,
+            alternative=AlternativeHypothesis.GREATER
         )
     )[0]
 
