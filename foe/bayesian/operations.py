@@ -5,8 +5,8 @@ from foe.core.models import BusinessCaseInput, BayesianResult, ExperimentInput
 
 class BayesianEngine:
     """
-    The FOE Bayesian Engine handles Beta-Binomial posterior updates,
-    Monte Carlo simulations for 'Probability of Being Best', and
+    The FOE Bayesian Engine handles Beta-Binomial posterior updates, 
+    Monte Carlo simulations for 'Probability of Being Best', and 
     Decision Theory-based monetary risk projections.
     """
 
@@ -83,16 +83,35 @@ class BayesianEngine:
         self,
         data: ExperimentInput,
         n_samples: int = 100000,
-    ) -> List[BayesianResult]:
+        return_samples: bool = False,
+        prior_alphas: Optional[List[float]] = None,
+        prior_betas: Optional[List[float]] = None
+    ) -> Dict[str, Any]:
         """
         Calculates Probability of Being Best using vectorized Monte Carlo sampling.
         Returns one BayesianResult per challenger variant.
         """
-        visitors = data.visitors
-        conversions = data.conversions
-        labels = data.labels or [f"Variant {i}" for i in range(len(visitors))]
+        num_variants = len(visitors)
+        if num_variants == 0:
+            return {"prob_being_best": [], "samples": np.array([]) if return_samples else None}
 
-        samples = self._sample_posteriors(visitors, conversions, n_samples)
+        # Vectorize parameter calculation
+        visitors_arr = np.array(visitors)
+        conversions_arr = np.array(conversions)
+
+        # Determine which priors to use
+        # If no priors provided, create an array of 1.0s (uninformed)
+        a_priors = np.array(prior_alphas) if prior_alphas else np.ones(num_variants)
+        b_priors = np.array(prior_betas) if prior_betas else np.ones(num_variants)
+        
+        # Calculate posteriors
+        a_post = a_priors + conversions_arr
+        b_post = b_priors + (visitors_arr - conversions_arr)
+        
+        # Vectorized Sampling using isolated RNG
+        samples = self.rng.beta(a_post[:, np.newaxis], b_post[:, np.newaxis], size=(num_variants, n_samples))
+        
+        # Identify the index of the max value across variants for each sample
         winner_indices = np.argmax(samples, axis=0)
         counts = np.bincount(winner_indices, minlength=len(visitors))
         prob_best_overall = counts / n_samples

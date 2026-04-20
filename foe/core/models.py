@@ -35,6 +35,13 @@ class ExperimentInput(BaseModel):
 
     @model_validator(mode="after")
     def check_statistical_soundness(self) -> "ExperimentInput":
+    # Informed priors if present
+    prior_alphas: Optional[List[float]] = None
+    prior_betas: Optional[List[float]] = None
+    biz_case: Optional[BusinessCaseInput] = None
+
+    @model_validator(mode='after')
+    def check_statistical_soundness(self) -> 'ExperimentInput':
         # ValueError is converted to clean 422 API error.
         validate_experiment_data(self.visitors, self.conversions)
         return self
@@ -103,6 +110,7 @@ class BusinessCaseInput(BaseModel):
     )
     alpha_prior: float = Field(1.0, gt=0.0)
     beta_prior: float = Field(1.0, gt=0.0)
+    projection_period: int = Field(183, gt=0, description="Projection period in days (6 months default)")
 
 
 # --- Sequential ---

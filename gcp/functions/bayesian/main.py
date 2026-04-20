@@ -9,12 +9,11 @@ from foe.bayesian.operations import BayesianEngine
 def bayesian_handler(request):
     """
     HTTP Cloud Function entry point for Bayesian A/B Analysis.
-    Expects a JSON payload matching the ExperimentInput schema.
-    Computes Probability of Being Best, Expected Loss, and Lift Distributions.
+    Supports informed priors and optional business case projections.
     """
-
-    # Handle CORS (Essential for Streamlit or Looker integrations)
-    if request.method == "OPTIONS":
+    
+    # 1. Handle CORS
+    if request.method == 'OPTIONS':
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "POST",
@@ -25,7 +24,7 @@ def bayesian_handler(request):
 
     headers = {"Access-Control-Allow-Origin": "*"}
 
-    # Parse JSON payload
+    # 2. Parse JSON payload
     request_json = request.get_json(silent=True)
     if not request_json:
         return (
@@ -37,17 +36,33 @@ def bayesian_handler(request):
         )
 
     try:
-        # Model Validation
+        # 3. Model Validation
         input_data = ExperimentInput(**request_json)
-
-        # Engine Execution
         engine = BayesianEngine()
-        results = engine.run_probability_analysis(input_data)
 
-        # Serialization
-        payload = [r.model_dump() for r in results]
+        # 4. Step One: Run Probability Analysis
+        # We use getattr to safely grab optional prior fields if they exist in your Pydantic model
+        prob_results = engine.run_probability_analysis(
+            visitors=input_data.visitors,
+            conversions=input_data.conversions,
+            prior_alphas=getattr(input_data, 'prior_alphas', None),
+            prior_betas=getattr(input_data, 'prior_betas', None)
+        )
 
-        return (jsonify(payload), 200, headers)
+        # 5. Step Two: Check for Business Case
+        # If the user provided AOV and Projection data, run the monetary engine
+        if hasattr(input_data, 'biz_case') and input_data.biz_case:
+            full_results = engine.run_monetary_projection(
+                visitors=input_data.visitors,
+                conversions=input_data.conversions,
+                biz_case=input_data.biz_case,
+                prob_best_overall=prob_results['prob_being_best'],
+                variant_labels=input_data.labels
+            )
+            return (jsonify(full_results), 200, headers)
+
+        # 6. Fallback: Return raw probabilities if no business case provided
+        return (jsonify(prob_results), 200, headers)
 
     except ValidationError as e:
         # 422 Unprocessable Entity: The schema is wrong or the test data is logically invalid
