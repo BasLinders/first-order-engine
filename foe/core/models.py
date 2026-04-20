@@ -76,6 +76,11 @@ class BayesianResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # Informed priors if present
+    prior_alphas: Optional[List[float]] = None
+    prior_betas: Optional[List[float]] = None
+    biz_case: Optional[BusinessCaseInput] = None
+
     variant_label: str
     control_label: str
     prob_being_best: float
