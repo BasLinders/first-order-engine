@@ -73,7 +73,7 @@ class FrequentistEngine:
         df: pd.DataFrame,
         target_kpi: str,
         pre_period_kpi: str,
-        variant_col: str = "variant",
+        variant_col: str = "variant"
     ) -> List[Dict[str, Any]]:
         """
         Lin's Adjustment (2013). More robust than CUPED for heterogeneous effects.
@@ -154,7 +154,7 @@ class FrequentistEngine:
         chal_conv: int,
         chal_n: int,
         alpha: float = 0.05,
-        n_bootstraps: int = 10000,
+        n_bootstraps: int = 10000
     ) -> float:
         """
         Calculates observed power via high-performance vectorized bootstrapping.
@@ -227,7 +227,7 @@ class FrequentistEngine:
                     uplift=uplift,
                     is_significant=is_sig,
                     ci_diff=ci,
-                    conclusion=conclusion,
+                    conclusion=conclusion
                 )
             )
 
