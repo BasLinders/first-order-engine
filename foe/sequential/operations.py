@@ -21,7 +21,7 @@ class SequentialEngine:
         current_llr: float,
         upper_bound: float,
         lower_bound: float,
-        days_elapsed: int,
+        days_elapsed: int
     ) -> str:
         """
         Evaluates the current LLR against the stopping boundaries and generates
@@ -62,7 +62,7 @@ class SequentialEngine:
         n_ctrl: Optional[np.ndarray] = None,
         x_ctrl: Optional[np.ndarray] = None,
         tau: float = 0.01,
-        fixed_baseline_cr: Optional[float] = None,
+        fixed_baseline_cr: Optional[float] = None
     ) -> np.ndarray:
         """
         Vectorized LLR calculation.
@@ -131,7 +131,7 @@ class SequentialEngine:
 
         return {
             "est_visitors_needed": round(est_vis),
-            "est_days_needed": round(est_days, 1),
+            "est_days_needed": round(est_days, 1)
         }
 
     def process_test_trajectory(
@@ -143,7 +143,7 @@ class SequentialEngine:
         beta: float,
         num_variants: int = 1,
         baseline_cr: Optional[float] = None,
-        control_group_name: str = "Control",
+        control_group_name: str = "Control"
     ) -> pd.DataFrame:
         """
         Orchestrates LLR calculation across a DataFrame.
@@ -185,7 +185,7 @@ class SequentialEngine:
                     x_var=merged["conversions_var"].values,
                     n_ctrl=merged["visitors_ctrl"].values,
                     x_ctrl=merged["conversions_ctrl"].values,
-                    tau=tau,
+                    tau=tau
                 )
 
                 merged["upper_bound"] = upper
@@ -195,7 +195,7 @@ class SequentialEngine:
                 merged["status"] = np.where(
                     merged["llr"] >= upper,
                     "winner",
-                    np.where(merged["llr"] <= lower, "loser", "continue"),
+                    np.where(merged["llr"] <= lower, "loser", "continue")
                 )
 
                 results.append(merged)
@@ -211,7 +211,7 @@ class SequentialEngine:
                     n_var=merged["visitors"].values,
                     x_var=merged["conversions"].values,
                     tau=tau,
-                    fixed_baseline_cr=baseline_cr,
+                    fixed_baseline_cr=baseline_cr
                 )
 
                 merged["upper_bound"] = upper
@@ -220,7 +220,7 @@ class SequentialEngine:
                 merged["status"] = np.where(
                     merged["llr"] >= upper,
                     "winner",
-                    np.where(merged["llr"] <= lower, "loser", "continue"),
+                    np.where(merged["llr"] <= lower, "loser", "continue")
                 )
 
                 results.append(merged)
