@@ -28,7 +28,7 @@ def _generate_ni_conclusion(
     is_non_inferior: bool,
     margin: float,
     lower_bound_diff: float,
-    confidence_level: float,
+    confidence_level: float
 ) -> str:
     """Helper method to generate a stakeholder-friendly NI conclusion."""
     if is_non_inferior:
@@ -49,7 +49,7 @@ def compute_non_inferiority(
     p_chal: float,
     se_diff: float,
     margin: float,
-    confidence_level: float = 95.0,
+    confidence_level: float = 95.0
 ) -> Dict[str, Any]:
     """
     Calculates Non-Inferiority (NI). This determines if a challenger is
