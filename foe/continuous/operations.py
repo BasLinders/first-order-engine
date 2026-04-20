@@ -123,7 +123,7 @@ class ContinuousMetricEngine:
             "kpi": kpi,
             "is_normal": is_normal,
             "is_homogeneous": is_homogeneous,
-            "summary_stats": summary_stats,
+            "summary_stats": summary_stats
         }
 
         # 4. Statistical Decision Tree
