@@ -30,7 +30,7 @@ class VizEngine:
                     "Variant": variant_label,
                     "Metric": "Observed",
                     "Count": visitor_counts[i],
-                    "opacity": 1.0,
+                    "opacity": 1.0
                 }
             )
             melted_data.append(
@@ -38,13 +38,13 @@ class VizEngine:
                     "Variant": variant_label,
                     "Metric": "Expected",
                     "Count": round(expected_counts[i]),
-                    "opacity": 0.4,
+                    "opacity": 0.4
                 }
             )
 
         return {
             "chart_data": melted_data,
-            "chart_caption": "Comparison of observed traffic vs. expected allocation. Large visual discrepancies indicate an SRM.",
+            "chart_caption": "Comparison of observed traffic vs. expected allocation. Large visual discrepancies indicate an SRM."
         }
 
     # --- Frequentist visualizations ---
@@ -58,7 +58,7 @@ class VizEngine:
             return {
                 "x": [],
                 "y": [],
-                "chart_caption": "Invalid data: Standard error is 0.",
+                "chart_caption": "Invalid data: Standard error is 0."
             }
 
         x = np.linspace(mean - 4 * std_error, mean + 4 * std_error, n_points)
@@ -67,7 +67,7 @@ class VizEngine:
         return {
             "x": x.tolist(),
             "y": y.tolist(),
-            "chart_caption": f"Normal distribution centered at {mean:.4f} with a standard error of {std_error:.4f}.",
+            "chart_caption": f"Normal distribution centered at {mean:.4f} with a standard error of {std_error:.4f}."
         }
 
     @staticmethod
@@ -77,7 +77,7 @@ class VizEngine:
         alpha: float,
         alternative: AlternativeHypothesis,
         mde_range: Tuple[float, float] = (0.01, 0.2),
-        n_points: int = 20,
+        n_points: int = 20
     ) -> Dict[str, Any]:
         """Calculates Power (Y) for various Minimum Detectable Effects (X)."""
         mde_steps = np.linspace(mde_range[0], mde_range[1], n_points)
@@ -107,7 +107,7 @@ class VizEngine:
     def get_frequentist_forest_plot(
         variant_labels: List[str],
         uplifts: List[float],
-        conf_intervals: List[Tuple[float, float]],
+        conf_intervals: List[Tuple[float, float]]
     ) -> Dict[str, Any]:
         """Formats uplift and CI data specifically for Whisker charts."""
         forest_data = []
@@ -122,13 +122,13 @@ class VizEngine:
                     "mean": float(uplift),
                     "error_minus": float(uplift - low),
                     "error_plus": float(high - uplift),
-                    "is_significant": is_sig,
+                    "is_significant": is_sig
                 }
             )
 
         return {
             "chart_data": forest_data,
-            "chart_caption": f"Effect sizes and 95% Confidence Intervals. {sig_count} variant(s) show a statistically significant effect.",
+            "chart_caption": f"Effect sizes and 95% Confidence Intervals. {sig_count} variant(s) show a statistically significant effect."
         }
 
     # --- Bayesian Visualizations ---
@@ -156,21 +156,21 @@ class VizEngine:
                 "label": "winner",
                 "color": "green",
                 "class": "success",
-                "summary": f"Clear Winner: Variant has a {p_best_pct:.1f}% chance of being best.",
+                "summary": f"Clear Winner: Variant has a {p_best_pct:.1f}% chance of being best."
             }
         elif p_ctrl_pct >= threshold:
             return {
                 "label": "loss averted",
                 "color": "red",
                 "class": "danger",
-                "summary": f"Loss Averted: Control has a {p_ctrl_pct:.1f}% chance of being best.",
+                "summary": f"Loss Averted: Control has a {p_ctrl_pct:.1f}% chance of being best."
             }
         else:
             return {
                 "label": "inconclusive",
                 "color": "black",
                 "class": "neutral",
-                "summary": "Inconclusive: Neither variant meets the probability threshold to declare a winner.",
+                "summary": "Inconclusive: Neither variant meets the probability threshold to declare a winner."
             }
 
     # --- Sequential ---
@@ -186,7 +186,7 @@ class VizEngine:
                 "trajectories": [],
                 "upper_bound": 0.0,
                 "lower_bound": 0.0,
-                "chart_caption": "No sequential data available.",
+                "chart_caption": "No sequential data available."
             }
 
         # The boundaries are constant per test, so grab them from the first row
@@ -208,7 +208,7 @@ class VizEngine:
                     "variant": variant,
                     "data": v_df[["measurement_date", "llr"]]
                     .rename(columns={"measurement_date": "date"})
-                    .to_dict(orient="records"),
+                    .to_dict(orient="records")
                 }
             )
 
@@ -216,7 +216,7 @@ class VizEngine:
             "upper_bound": upper,
             "lower_bound": lower,
             "trajectories": trajectories,
-            "chart_caption": "Sequential Log-Likelihood Ratio (LLR) trajectory over time. Test stops when a trajectory crosses the upper or lower boundary.",
+            "chart_caption": "Sequential Log-Likelihood Ratio (LLR) trajectory over time. Test stops when a trajectory crosses the upper or lower boundary."
         }
 
     # --- Interaction Analysis ---
@@ -244,7 +244,7 @@ class VizEngine:
                     "error_minus": float(coef - low),
                     "error_plus": float(high - coef),
                     "is_significant": is_significant,
-                    "color_state": "significant" if is_significant else "neutral",
+                    "color_state": "significant" if is_significant else "neutral"
                 }
             )
 
@@ -274,5 +274,5 @@ class VizEngine:
 
         return {
             "chart_data": means.to_dict(orient="records"),
-            "chart_caption": f"Average {kpi} broken down by Variant and {segment_column}.",
+            "chart_caption": f"Average {kpi} broken down by Variant and {segment_column}."
         }
