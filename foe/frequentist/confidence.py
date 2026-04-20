@@ -99,5 +99,5 @@ def compute_non_inferiority(
         "confidence_level": confidence_level,
         "conclusion": _generate_ni_conclusion(
             is_ni, margin, lower_bound_diff, confidence_level
-        ),
+        )
     }
