@@ -12,7 +12,33 @@ class SequentialEngine:
     """
     Core engine for Mixture Sequential Probability Ratio Testing (mSPRT).
     """
-
+    
+    @staticmethod
+    def conditional_power_check(
+        current_llr: float,
+        upper_bound: float,
+        total_visitors: int,
+        max_visitors: int
+    ) -> Dict[str, Union[bool, float]]:
+        """
+        Projects whether the test can reach significance before the visitor cap.
+        Returns can_recover and projected_llr at cap.
+        """
+        if total_visitors == 0:
+            return {"can_recover": True, "projected_llr": 0.0}
+    
+        remaining = max_visitors - total_visitors
+        if remaining <= 0:
+            return {"can_recover": current_llr >= upper_bound, "projected_llr": current_llr}
+    
+        llr_per_visitor = current_llr / total_visitors
+        projected_llr = current_llr + (llr_per_visitor * remaining)
+    
+        return {
+            "can_recover": projected_llr >= upper_bound,
+            "projected_llr": round(projected_llr, 4)
+        }
+        
     @staticmethod
     def generate_sequential_conclusion(
         variant_name: str, 
@@ -73,7 +99,7 @@ class SequentialEngine:
                 p_base = fixed_baseline_cr
                 p_var = x_var / np.maximum(n_var, 1) 
                 
-                variance = (p_var * (1 - p_var)) / np.maximum(n_var, 1)
+                variance = (p_base * (1 - p_base)) / np.maximum(n_var, 1)
                 diff = p_var - p_base
                 
             else:
@@ -127,6 +153,27 @@ class SequentialEngine:
             "est_days_needed": round(est_days, 1)
         }
 
+    @staticmethod
+    def _assign_status(
+        merged: pd.DataFrame,
+        upper: float,
+        lower: float,
+        visitors_col: str,
+        max_visitors: Optional[int]
+    ) -> pd.Series:
+        """Assigns a status label to each row based on LLR position and optional visitor cap."""
+        base = np.where(
+            merged['llr'] >= upper, 'winner',
+            np.where(merged['llr'] <= lower, 'loser', 'continue')
+        )
+        if max_visitors is not None:
+            return np.where(
+                merged[visitors_col] >= max_visitors,
+                np.where(base == 'continue', 'cap_reached', base),
+                base
+            )
+        return base
+    
     def process_test_trajectory(
         self, 
         df: pd.DataFrame, 
@@ -136,6 +183,7 @@ class SequentialEngine:
         beta: float,
         num_variants: int = 1,
         baseline_cr: Optional[float] = None,
+        max_visitors: Optional[int] = None,
         control_group_name: str = 'Control'
     ) -> pd.DataFrame:
         """
@@ -179,11 +227,8 @@ class SequentialEngine:
                 merged['lower_bound'] = lower
                 
                 # Add a simple status flag for UI charting colors
-                merged['status'] = np.where(
-                    merged['llr'] >= upper, 'winner',
-                    np.where(merged['llr'] <= lower, 'loser', 'continue')
-                )
-                
+                merged['status'] = self._assign_status(merged, upper, lower, 'visitors_var', max_visitors)
+
                 results.append(merged)
                 
         elif test_type == TestType.ONE_SAMPLE:
@@ -203,10 +248,7 @@ class SequentialEngine:
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
                 
-                merged['status'] = np.where(
-                    merged['llr'] >= upper, 'winner',
-                    np.where(merged['llr'] <= lower, 'loser', 'continue')
-                )
+                merged['status'] = self._assign_status(merged, upper, lower, 'visitors', max_visitors)
                 
                 results.append(merged)
                 
