@@ -225,6 +225,8 @@ class SequentialEngine:
                 
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
+
+                merged['max_visitors'] = max_visitors if max_visitors is not None else np.nan
                 
                 # Add a simple status flag for UI charting colors
                 merged['status'] = self._assign_status(merged, upper, lower, 'visitors_var', max_visitors)
