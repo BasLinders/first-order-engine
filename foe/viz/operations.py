@@ -130,9 +130,11 @@ class VizEngine:
         if trajectory_df.empty:
             return {"trajectories": [], "upper_bound": 0.0, "lower_bound": 0.0, "chart_caption": "No sequential data available."}
 
-        # The boundaries are constant per test, so grab them from the first row
+        # The boundaries and max_visitors are constant per test, so grab them from the first row
         upper = float(trajectory_df['upper_bound'].iloc[0])
         lower = float(trajectory_df['lower_bound'].iloc[0])
+        max_vis_val = trajectory_df['max_visitors'].iloc[0]
+        max_visitors_out = None if np.isnan(max_vis_val) else int(max_vis_val)
         
         # Ensure dates are JSON serializable
         df_safe = trajectory_df.copy()
@@ -151,6 +153,7 @@ class VizEngine:
             })
             
         return {
+            "max_visitors": max_visitors_out,
             "upper_bound": upper,
             "lower_bound": lower,
             "trajectories": trajectories,
