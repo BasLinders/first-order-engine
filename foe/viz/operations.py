@@ -144,7 +144,10 @@ class VizEngine:
             v_df = df_safe[df_safe['variant_name'] == variant]
             trajectories.append({
                 "variant": variant,
-                "data": v_df[['measurement_date', 'llr']].rename(columns={'measurement_date': 'date'}).to_dict(orient='records')
+                visitors_col = 'visitors_var' if 'visitors_var' in v_df.columns else 'visitors'
+                "data": v_df[['measurement_date', 'llr' , 'status']].rename(
+                    columns={'measurement_date': 'date', visitors_col: 'visitors'}
+                ).to_dict(orient='records')
             })
             
         return {
