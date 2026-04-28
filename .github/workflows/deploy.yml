@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.1.2
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5.1.0
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -58,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.1.2
+        uses: actions/checkout@v6
 
       - name: Download wheel artifact
         uses: actions/download-artifact@v4.3.0
