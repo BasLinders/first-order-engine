@@ -26,7 +26,7 @@ class ExperimentInput(BaseModel):
     # Informed priors if present
     prior_alphas: Optional[List[float]] = None
     prior_betas: Optional[List[float]] = None
-    biz_case: Optional[BusinessCaseInput] = None
+    biz_case: Optional["BusinessCaseInput"] = None
 
     @model_validator(mode='after')
     def check_statistical_soundness(self) -> 'ExperimentInput':
@@ -66,6 +66,8 @@ class BusinessCaseInput(BaseModel):
     aovs: Dict[str, float] = Field(..., description="Mapping of variant labels to Average Order Value")
     runtime_days: int = Field(..., gt=0)
     projection_period: int = Field(183, gt=0, description="Projection period in days (6 months default)")
+
+ExperimentInput.model_rebuild()
 
 # --- Sequential ---
 
