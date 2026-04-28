@@ -1,0 +1,32 @@
+name: Auto-fix Style
+
+on:
+  push:
+    branches: ["**"]
+
+jobs:
+  autoformat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install autopep8
+        run: pip install autopep8
+
+      - name: Run autopep8
+        run: |
+          autopep8 --in-place --recursive \
+            --max-line-length 88 \
+            --select W291,W293,W391,E302,E303,E261,E501 \
+            .
+
+      - name: Commit fixes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-fix flake8 cosmetic issues"
