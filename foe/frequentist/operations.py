@@ -5,7 +5,7 @@ from scipy.stats import norm
 from typing import List, Optional, Tuple, Dict, Any
 
 # Updated import path based on our earlier root folder rename
-from axiom.core.models import AlternativeHypothesis
+from foe.core.models import AlternativeHypothesis
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
     """Calculates adjusted alpha for multiple comparisons (A/B/n)."""
