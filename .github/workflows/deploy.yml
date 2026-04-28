@@ -1,4 +1,6 @@
 name: Deploy Cloud Functions
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:
 
 on:
   workflow_run:
@@ -13,10 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@v4.1.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5.0.0
+        uses: actions/setup-python@v5.0.1
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -56,10 +58,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@v4.1.2
 
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4.1.1
+        uses: actions/download-artifact@v4.3.0
         with:
           name: foe-wheel
 
