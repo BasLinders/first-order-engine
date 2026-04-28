@@ -35,10 +35,10 @@ class ExperimentInput(BaseModel):
 
     @model_validator(mode="after")
     def check_statistical_soundness(self) -> "ExperimentInput":
-    # Informed priors if present
-    prior_alphas: Optional[List[float]] = None
-    prior_betas: Optional[List[float]] = None
-    biz_case: Optional["BusinessCaseInput"] = None
+        # Informed priors if present
+        prior_alphas: Optional[List[float]] = None
+        prior_betas: Optional[List[float]] = None
+        biz_case: Optional["BusinessCaseInput"] = None
 
     @model_validator(mode='after')
     def check_statistical_soundness(self) -> 'ExperimentInput':
