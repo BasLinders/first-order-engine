@@ -14,11 +14,14 @@ def interaction_handler(request):
     data = request_json.get('data')
     kpi = request_json.get('kpi')
     factors = request_json.get('factors') # List of column names
+
+    if not request_json:
+        return (jsonify({"error": "Bad Request", "message": "Missing JSON payload"}), 400, headers)
     
     try:
         df = pd.DataFrame(data)
         engine = InteractionEngine()
-        results = engine.run_interaction_analysis(df, test_cols)
+        results = engine.run_interaction_analysis(df, kpi, factors)
         return (jsonify(results), 200, headers)
     except Exception as e:
         return (jsonify({"error": "Internal Engine Error", "message": str(e)}), 500, headers)
