@@ -9,6 +9,7 @@ on:
       - 'pyproject.toml'
   pull_request:
     branches: ["main", "master"]
+  workflow_dispatch:
 
 jobs:
   autoformat:
