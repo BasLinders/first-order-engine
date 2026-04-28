@@ -36,6 +36,8 @@ dev = [
     "pytest-cov>=4.0",
     "flake8>=6.0",
     "black>=23.0",
+    "flask>=3.0",
+    "functions-framework>=3.0.0",
 ]
 # Dependencies specifically for GCP Cloud Functions
 gcp = [

@@ -1,28 +1,40 @@
 from enum import Enum
-from datetime import date
+from datetime import date  # noqa: F401
 from typing import List, Optional, Tuple, Dict
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from foe.core.validators import validate_experiment_data
 
 # --- Frequentist ---
 
+
 class AlternativeHypothesis(str, Enum):
     """Matches the 'tail' logic; string-based for clean JSON serialization."""
+
     TWO_SIDED = "two-sided"
     GREATER = "greater"
     LESS = "less"
 
+
 class ExperimentInput(BaseModel):
     """The raw data and settings for the Axiom Synthesis Engine."""
+
     model_config = ConfigDict(frozen=True)
 
-    visitors: List[int] = Field(..., description="List of visitor counts per variant", min_length=2)
-    conversions: List[int] = Field(..., description="List of conversion counts per variant", min_length=2)
+    visitors: List[int] = Field(
+        ..., description="List of visitor counts per variant", min_length=2
+    )
+    conversions: List[int] = Field(
+        ..., description="List of conversion counts per variant", min_length=2
+    )
     alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
     confidence_level: float = Field(0.95, ge=0.0, lt=1.0)
     reduction_factor: float = Field(1.0, description="CUPED adjustment factor")
-    labels: Optional[List[str]] = Field(None, description="Names of the variants (e.g., ['Control', 'Treatment'])")
+    labels: Optional[List[str]] = Field(
+        None, description="Names of the variants (e.g., ['Control', 'Treatment'])"
+    )
 
+    @model_validator(mode="after")
+    def check_statistical_soundness(self) -> "ExperimentInput":
     # Informed priors if present
     prior_alphas: Optional[List[float]] = None
     prior_betas: Optional[List[float]] = None
@@ -34,11 +46,13 @@ class ExperimentInput(BaseModel):
         validate_experiment_data(self.visitors, self.conversions)
         return self
 
+
 class FrequentistResult(BaseModel):
     """
     Standardized output for a single variant comparison.
     The Engine will return a List[FrequentistResult] for multi-variant tests.
     """
+
     model_config = ConfigDict(frozen=True)
 
     variant_label: str
@@ -49,30 +63,63 @@ class FrequentistResult(BaseModel):
     uplift: float
     is_significant: bool
     # CI for the difference (diff_cr - moe, diff_cr + moe)
-    ci_diff: Tuple[float, float] = Field(..., description="Confidence interval bounds: (lower, upper)")
-    conclusion: str = Field(..., description="Definitive, UI-agnostic summary of the result")
-    
+    ci_diff: Tuple[float, float] = Field(
+        ..., description="Confidence interval bounds: (lower, upper)"
+    )
+    conclusion: str = Field(
+        ..., description="Definitive, UI-agnostic summary of the result"
+    )
+
     # These match your NI logic
     lower_bound_diff: Optional[float] = None
     is_non_inferior: Optional[bool] = None
 
+
 # --- Bayesian ---
+
+
+class BayesianResult(BaseModel):
+    """Standardized output for a single Bayesian variant comparison."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Informed priors if present
+    prior_alphas: Optional[List[float]] = None
+    prior_betas: Optional[List[float]] = None
+    biz_case: Optional[BusinessCaseInput] = None
+
+    variant_label: str
+    control_label: str
+    prob_being_best: float
+    expected_loss: float
+    conclusion: str
+
 
 class BusinessCaseInput(BaseModel):
     """Inputs for Bayesian risk and business case assessment."""
+
     model_config = ConfigDict(frozen=True)
 
     # Updated to a Dict to safely map variant labels to their AOVs over an API
-    aovs: Dict[str, float] = Field(..., description="Mapping of variant labels to Average Order Value")
+    aovs: Dict[str, float] = Field(
+        ..., description="Mapping of variant labels to Average Order Value"
+    )
     runtime_days: int = Field(..., gt=0)
+    projection_period: int = Field(
+        183, gt=0, description="Projection period in days (6 months default)"
+    )
+    alpha_prior: float = Field(1.0, gt=0.0)
+    beta_prior: float = Field(1.0, gt=0.0)
     projection_period: int = Field(183, gt=0, description="Projection period in days (6 months default)")
 
 ExperimentInput.model_rebuild()
 
 # --- Sequential ---
 
+
 class SequentialDataPoint(BaseModel):
     """A single time-series data point for sequential testing algorithms."""
+
     model_config = ConfigDict(frozen=True)
 
     date: date
@@ -80,8 +127,10 @@ class SequentialDataPoint(BaseModel):
     visitors: int = Field(..., ge=0)
     conversions: int = Field(..., ge=0)
 
+
 class SequentialConfig(BaseModel):
     """Configuration for sequential boundary calculations."""
+
     model_config = ConfigDict(frozen=True)
 
     alpha: float = Field(0.05, gt=0.0, lt=1.0)

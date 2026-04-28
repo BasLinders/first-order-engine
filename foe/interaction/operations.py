@@ -1,5 +1,4 @@
 import re
-import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import patsy
@@ -8,6 +7,7 @@ from typing import List, Dict, Any
 # Pre-compiled regex for parsing statsmodels coefficient names like:
 # "C(test1)[T.VariantB]"  →  group(1)="test1", group(2)="VariantB"
 _COEF_TERM_RE = re.compile(r"C\((\w+)\)\[T\.([^\]]+)\]")
+
 
 class InteractionEngine:
     """
@@ -21,10 +21,7 @@ class InteractionEngine:
 
     @staticmethod
     def generate_interaction_conclusion(
-        term_label: str,
-        coef: float,
-        p_value: float,
-        alpha: float = 0.05
+        term_label: str, coef: float, p_value: float, alpha: float = 0.05
     ) -> str:
         """
         Generates definitive business statements for main effects and interactions.
@@ -54,7 +51,9 @@ class InteractionEngine:
             )
 
     @staticmethod
-    def prepare_aggregated_format(input_df: pd.DataFrame, test_cols: List[str]) -> pd.DataFrame:
+    def prepare_aggregated_format(
+        input_df: pd.DataFrame, test_cols: List[str]
+    ) -> pd.DataFrame:
         """Prepares a cleaned, aggregated dataframe for model fitting."""
         df = input_df.copy()
         for col in test_cols:
@@ -62,7 +61,9 @@ class InteractionEngine:
         df["non_conversions"] = df["visitors"] - df["conversions"]
         return df
 
-    def run_interaction_analysis(self, df: pd.DataFrame, test_cols: List[str]) -> List[Dict[str, Any]]:
+    def run_interaction_analysis(
+        self, df: pd.DataFrame, test_cols: List[str]
+    ) -> List[Dict[str, Any]]:
         """
         Orchestrates preparation, model fitting, and JSON-safe extraction.
         Builds the design matrix safely using patsy to avoid formula parser bugs.
@@ -75,7 +76,9 @@ class InteractionEngine:
 
         # 2. Build Exogenous Design Matrix via patsy
         formula_rhs = " * ".join([f"C({col})" for col in test_cols])
-        exog = patsy.dmatrix(f"~ {formula_rhs}", data=processed_df, return_type='dataframe')
+        exog = patsy.dmatrix(
+            f"~ {formula_rhs}", data=processed_df, return_type="dataframe"
+        )
 
         try:
             model = sm.GLM(
@@ -98,26 +101,30 @@ class InteractionEngine:
 
         for raw_name, row in summary_df.iterrows():
             clean_name = self._rename_coefficient(str(raw_name))
-            coef = float(row['Coef.'])
-            p_val = float(row['P>|z|'])
-            
+            coef = float(row["Coef."])
+            p_val = float(row["P>|z|"])
+
             # Skip the intercept/baseline conclusion as it represents the raw control state
-            conclusion = "Baseline Group" if clean_name == "Baseline (Control Group)" else self.generate_interaction_conclusion(
-                term_label=clean_name,
-                coef=coef,
-                p_value=p_val
+            conclusion = (
+                "Baseline Group"
+                if clean_name == "Baseline (Control Group)"
+                else self.generate_interaction_conclusion(
+                    term_label=clean_name, coef=coef, p_value=p_val
+                )
             )
 
-            results.append({
-                "term": clean_name,
-                "raw_term": str(raw_name),
-                "coefficient": coef,
-                "std_err": float(row['Std.Err.']),
-                "z_score": float(row['z']),
-                "p_value": p_val,
-                "is_significant": bool(p_val < 0.05),
-                "conclusion": conclusion
-            })
+            results.append(
+                {
+                    "term": clean_name,
+                    "raw_term": str(raw_name),
+                    "coefficient": coef,
+                    "std_err": float(row["Std.Err."]),
+                    "z_score": float(row["z"]),
+                    "p_value": p_val,
+                    "is_significant": bool(p_val < 0.05),
+                    "conclusion": conclusion
+                }
+            )
 
         return results
 
@@ -133,7 +140,9 @@ class InteractionEngine:
                 f"{2 ** len(test_cols)} terms and become numerically unstable."
             )
 
-        missing_cols = [c for c in [*test_cols, "visitors", "conversions"] if c not in df.columns]
+        missing_cols = [
+            c for c in [*test_cols, "visitors", "conversions"] if c not in df.columns
+        ]
         if missing_cols:
             raise ValueError(f"Required columns missing from dataframe: {missing_cols}")
 
@@ -144,7 +153,9 @@ class InteractionEngine:
             raise ValueError("'visitors' column contains negative values.")
 
         if (df["conversions"] > df["visitors"]).any():
-            raise ValueError("Some rows have more conversions than visitors. Check your input data.")
+            raise ValueError(
+                "Some rows have more conversions than visitors. Check your input data."
+            )
 
         if df[test_cols].isnull().any().any():
             raise ValueError("Test variant columns contain null values.")
@@ -160,7 +171,9 @@ class InteractionEngine:
             clean_parts = []
             for part in parts:
                 m = _COEF_TERM_RE.fullmatch(part.strip())
-                clean_parts.append(f"{m.group(1)} ({m.group(2)})" if m else part.strip())
+                clean_parts.append(
+                    f"{m.group(1)} ({m.group(2)})" if m else part.strip()
+                )
             return " & ".join(clean_parts) + " — Clash/Synergy"
 
         m = _COEF_TERM_RE.fullmatch(name.strip())

@@ -1,11 +1,12 @@
 import pytest
-import numpy as np
 from foe.bayesian.operations import BayesianEngine
 from foe.core.models import ExperimentInput, BusinessCaseInput
+
 
 @pytest.fixture
 def engine():
     return BayesianEngine()
+
 
 def test_probability_of_being_best(engine):
     """

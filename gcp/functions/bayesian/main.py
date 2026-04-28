@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from foe.core.models import ExperimentInput
 from foe.bayesian.operations import BayesianEngine
 
+
 @functions_framework.http
 def bayesian_handler(request):
     """
@@ -14,19 +15,25 @@ def bayesian_handler(request):
     # 1. Handle CORS
     if request.method == 'OPTIONS':
         headers = {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST',
-            'Access-Control-Allow-Headers': 'Content-Type',
-            'Access-Control-Allow-Max-Age': '3600'
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Max-Age": "3600"
         }
-        return ('', 204, headers)
+        return ("", 204, headers)
 
-    headers = {'Access-Control-Allow-Origin': '*'}
+    headers = {"Access-Control-Allow-Origin": "*"}
 
     # 2. Parse JSON payload
     request_json = request.get_json(silent=True)
     if not request_json:
-        return (jsonify({"error": "Bad Request", "message": "Missing JSON payload"}), 400, headers)
+        return (
+            jsonify(
+                {"error": "Bad Request", "message": "Missing or invalid JSON payload"}
+            ),
+            400,
+            headers
+        )
 
     try:
         # 3. Model Validation
@@ -58,13 +65,22 @@ def bayesian_handler(request):
         return (jsonify(prob_results), 200, headers)
 
     except ValidationError as e:
-        return (jsonify({
-            "error": "Validation Error",
-            "details": e.errors(include_url=False, include_context=False)
-        }), 422, headers)
-        
+        # 422 Unprocessable Entity: The schema is wrong or the test data is logically invalid
+        return (
+            jsonify(
+                {
+                    "error": "Validation Error",
+                    "details": e.errors(include_url=False, include_context=False)
+                }
+            ),
+            422,
+            headers
+        )
+
     except Exception as e:
-        return (jsonify({
-            "error": "Internal Engine Error",
-            "message": str(e)
-        }), 500, headers)
+        # 500 Internal Server Error: Something went wrong deep in the math engine
+        return (
+            jsonify({"error": "Internal Engine Error", "message": str(e)}),
+            500,
+            headers
+        )
