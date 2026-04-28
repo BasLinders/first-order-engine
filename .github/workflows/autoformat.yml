@@ -30,3 +30,18 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "style: auto-fix flake8 cosmetic issues"
+
+      - name: Install formatters
+        run: pip install autopep8 autoflake
+      
+      - name: Remove unused imports
+        run: |
+          autoflake --in-place --recursive \
+            --remove-all-unused-imports \
+            .
+      
+      - name: Fix style issues
+        run: |
+          autopep8 --in-place --recursive \
+            --max-line-length 88 \
+            --select W291,W293,W391,E302,E303,E261,E501 \
