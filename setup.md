@@ -40,15 +40,49 @@ pip install -e .[dev]
 ```
 
 ## 3. Running the Test Suite
-We use pytest for mathematical and structural validation. Always run the tests before pushing to main to ensure the "First Order" logic remains intact.Bash# Run all unit tests with coverage reporting
+We use pytest for mathematical and structural validation. Always run the tests before pushing to main to ensure the "First Order" logic remains intact.
+
+# Run all unit tests with coverage reporting
+```bash
 pytest tests/ --cov=foe --cov-report=term-missing
-Pro-Tip: Statistical failures are often due to floating-point precision issues; if you are writing new tests, use pytest.approx() for assertions.4. Local GCP SimulationTo test the Cloud Function entry points without deploying to Google Cloud, use the functions-framework.Install the framework:Bashpip install functions-framework
-Start the local server:Point the framework to your specific module handler. For example, to test the Frequentist module:Bash# From the root of the project
-export PYTHONPATH=$PYTHONPATH:.
-functions-framework --target=frequentist_handler --source=gcp/functions/frequentist/main.py
-6. Deployment ConfigurationGitHub Actions SecretsTo enable the automated deployment pipeline (.github/workflows/deploy.yml), you must configure the following Secrets in your GitHub repository settings:Secret NameDescriptionGCP_WIP_PROVIDERThe full path to your Workload Identity Provider (e.g., projects/123/locations/global/workloadIdentityPools/...).GCP_SERVICE_ACCOUNTThe email of the Service Account with Cloud Functions Developer and Service Account User permissions.GCP Project SetupEnsure the following APIs are enabled in your Google Cloud Project:Cloud Functions APICloud Build APIArtifact Registry API6. Project Structure Overviewfoe/: The core statistical library containing the mathematical engines.gcp/functions/: The adapter layer that routes JSON requests into the engine.tests/: The automated validation suite for ensuring mathematical truth.pyproject.toml: The central source of truth for all metadata and dependencies.For technical support or mathematical inquiries regarding predicate logic integration, please contact the growth engineering team.
+```
+Important: Statistical failures are often due to floating-point precision issues; if you are writing new tests, use pytest.approx() for assertions.
 
-**What's next?**
-Now that your documentation is ready, we have one final piece of the "GCP Handshake" to complete: **`gcp/functions/frequentist/main.py`**.
+## 4. Local GCP Simulation
+To test the Cloud Function entry points without deploying to Google Cloud, use the functions-framework.
 
-Would you like to see how we wrap the `foe` engine in a Google Cloud Function request 
+```bash
+# Install the framework:
+pip install functions-framework
+```
+## 5. Start the local server
+Point the framework to your specific module handler. For example, to test the Frequentist module:
+
+```bash
+# From the root of the project
+export PYTHONPATH=$PYTHONPATH: functions-framework --target=frequentist_handler --source=gcp/functions/frequentist/main.py
+```
+
+## 6. Deployment Configuration
+**GitHub Actions Secrets**
+To enable the automated deployment pipeline (.github/workflows/deploy.yml), you must configure the following Secrets in your GitHub repository settings:
+* Secret Name
+* Descriptio
+* nGCP_WIP_PROVIDER
+* The full path to your Workload Identity Provider (e.g., projects/123/locations/global/workloadIdentityPools/...).
+* GCP_SERVICE_ACCOUNT
+* The email of the Service Account with Cloud Functions Developer and Service Account User permissions.
+
+**GCP Project Setup** 
+Ensure the following APIs are enabled in your Google Cloud Project:
+* Cloud Functions API
+* Cloud Build API
+* Artifact Registry API6.
+
+**Project Structure Overview**
+* foe/: The core statistical library containing the mathematical engines.
+* gcp/functions/: The adapter layer that routes JSON requests into the engine.
+* tests/: The automated validation suite for ensuring mathematical truth.
+* pyproject.toml: The central source of truth for all metadata and dependencies.
+
+For technical support or mathematical inquiries regarding predicate logic integration, please contact the engineering team.
