@@ -52,7 +52,8 @@ exclude = ["tests*", "gcp*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--doctest-modules --cov=foe"
+pythonpath = ["."]
+addopts = "--cov=foe"
 
 [tool.black]
 line-length = 88
