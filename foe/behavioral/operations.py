@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import statsmodels.formula.api as smf
 from scipy import stats
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List
 
 class BehavioralEngine:
     """
