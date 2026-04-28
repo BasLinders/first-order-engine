@@ -189,10 +189,12 @@ class VizEngine:
                 "chart_caption": "No sequential data available."
             }
 
-        # The boundaries are constant per test, so grab them from the first row
-        upper = float(trajectory_df["upper_bound"].iloc[0])
-        lower = float(trajectory_df["lower_bound"].iloc[0])
-
+        # The boundaries and max_visitors are constant per test, so grab them from the first row
+        upper = float(trajectory_df['upper_bound'].iloc[0])
+        lower = float(trajectory_df['lower_bound'].iloc[0])
+        max_vis_val = trajectory_df['max_visitors'].iloc[0]
+        max_visitors_out = None if np.isnan(max_vis_val) else int(max_vis_val)
+        
         # Ensure dates are JSON serializable
         df_safe = trajectory_df.copy()
         if pd.api.types.is_datetime64_any_dtype(df_safe["measurement_date"]):
@@ -201,18 +203,18 @@ class VizEngine:
             )
 
         trajectories = []
-        for variant in df_safe["variant_name"].unique():
-            v_df = df_safe[df_safe["variant_name"] == variant]
-            trajectories.append(
-                {
-                    "variant": variant,
-                    "data": v_df[["measurement_date", "llr"]]
-                    .rename(columns={"measurement_date": "date"})
-                    .to_dict(orient="records")
-                }
-            )
-
+        for variant in df_safe['variant_name'].unique():
+            v_df = df_safe[df_safe['variant_name'] == variant]
+            visitors_col = 'visitors_var' if 'visitors_var' in v_df.columns else 'visitors'
+            trajectories.append({
+                "variant": variant,
+                "data": v_df[['measurement_date', 'llr' , 'status']].rename(
+                    columns={'measurement_date': 'date', visitors_col: 'visitors'}
+                ).to_dict(orient='records')
+            })
+            
         return {
+            "max_visitors": max_visitors_out,
             "upper_bound": upper,
             "lower_bound": lower,
             "trajectories": trajectories,

@@ -7,6 +7,8 @@ from typing import List, Dict, Any
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
 from foe.frequentist.confidence import compute_interval_difference
 
+# Updated import path based on our earlier root folder rename
+from foe.core.models import AlternativeHypothesis
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
     """Calculates adjusted alpha for multiple comparisons (A/B/n)."""

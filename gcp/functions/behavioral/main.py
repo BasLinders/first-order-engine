@@ -19,12 +19,15 @@ def behavioral_handler(request):
 
     headers = {"Access-Control-Allow-Origin": "*"}
     request_json = request.get_json(silent=True)
+    
+    data = request_json.get('data')
+    kpi = request_json.get('kpi')
+    control = request_json.get('control_label')
+    alpha = request_json('alpha', 0.05)
 
-    data = request_json.get("data")
-    kpi = request_json.get("kpi")
-    control = request_json.get("control_label")
-    alpha = request_json.get("alpha", 0.05)
-
+    if not request_json:
+        return (jsonify({"error": "Bad Request", "message": "Missing JSON payload"}), 400, headers)
+    
     try:
         df = pd.DataFrame(data)
         engine = BehavioralEngine()

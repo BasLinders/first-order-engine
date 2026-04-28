@@ -19,14 +19,18 @@ def interaction_handler(request):
 
     headers = {"Access-Control-Allow-Origin": "*"}
     request_json = request.get_json(silent=True)
+    
+    data = request_json.get('data')
+    kpi = request_json.get('kpi')
+    factors = request_json.get('factors') # List of column names
 
-    data = request_json.get("data")
-    factors = request_json.get("factors")  # List of column names
-
+    if not request_json:
+        return (jsonify({"error": "Bad Request", "message": "Missing JSON payload"}), 400, headers)
+    
     try:
         df = pd.DataFrame(data)
         engine = InteractionEngine()
-        results = engine.run_interaction_analysis(df, factors)
+        results = engine.run_interaction_analysis(df, kpi, factors)
         return (jsonify(results), 200, headers)
     except Exception as e:
         return (
