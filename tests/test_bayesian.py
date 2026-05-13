@@ -1,6 +1,14 @@
 import pytest
 import numpy as np
-from foe.bayesian.operations import BayesianEngine, get_beta_prior, get_lift_prior, BetaPrior, LiftPrior
+from pydantic import ValidationError
+
+from foe.bayesian.operations import (
+    BayesianEngine,
+    get_beta_prior,
+    get_lift_prior,
+    BetaPrior,
+    LiftPrior,
+)
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
 
@@ -8,16 +16,19 @@ from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
 @pytest.fixture
 def engine():
-    # Fixed seed for deterministic results across runs
+    # Fixed seed for deterministic results across runs.
     return BayesianEngine(seed=42)
+
 
 @pytest.fixture
 def uninformative_priors():
     return get_beta_prior(), get_lift_prior(0.0, "uninformative")
 
+
 @pytest.fixture
 def skeptical_priors():
     return get_beta_prior(), get_lift_prior(0.0, "skeptical")
+
 
 def make_experiment(visitors, conversions, labels=None):
     if labels is None:
@@ -72,14 +83,14 @@ def test_flat_test_produces_even_split(engine, uninformative_priors):
 
 def test_three_variants_strongest_dominates(engine, uninformative_priors):
     """
-    With three variants, the strongest should have PBB > 0.95 and
-    all PBBs should sum to ~1.
+    With three variants, the strongest should have PBB > 0.90 and
+    all PBBs (including control) should sum to ~1.
     """
     beta_prior, lift_prior = uninformative_priors
     results = engine.run_probability_analysis(
         data=make_experiment(
             [1000, 1000, 1000], [50, 75, 120],
-            labels=["Control", "B", "C"]
+            labels=["Control", "B", "C"],
         ),
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -89,22 +100,22 @@ def test_three_variants_strongest_dominates(engine, uninformative_priors):
     pbb_c = results[1].prob_being_best  # Variant C
     assert pbb_c > 0.90
 
-    # All PBBs including control should sum to ~1
-    all_pbb = [1.0 - sum(r.prob_being_best for r in results)] + [r.prob_being_best for r in results]
+    # All PBBs including control should sum to ~1.
+    all_pbb = (
+        [1.0 - sum(r.prob_being_best for r in results)]
+        + [r.prob_being_best for r in results]
+    )
     assert abs(sum(all_pbb) - 1.0) < 1e-6
 
 
-def test_empty_input_returns_empty_list(engine, uninformative_priors):
+def test_empty_input_rejected_by_model():
     """
-    Empty input should return an empty list without crashing.
+    ExperimentInput rejects empty visitor/conversion lists at the model boundary.
+    The engine layer never receives invalid input — validation happens in Pydantic
+    via min_length=2 on the visitors and conversions fields.
     """
-    beta_prior, lift_prior = uninformative_priors
-    results = engine.run_probability_analysis(
-        data=make_experiment([], []),
-        beta_prior=beta_prior,
-        lift_prior=lift_prior,
-    )
-    assert results == []
+    with pytest.raises(ValidationError, match="at least 2 items"):
+        make_experiment([], [])
 
 
 def test_skeptical_prior_dampens_extreme_result(engine):
@@ -124,19 +135,21 @@ def test_skeptical_prior_dampens_extreme_result(engine):
         beta_prior=get_beta_prior(),
         lift_prior=get_lift_prior(0.0, "skeptical"),
     )
-    # Skeptical prior should penalise a large lift
+    # Skeptical prior should penalise a large lift.
     assert result_skeptical[0].prob_beat_control < result_uninformative[0].prob_beat_control
 
 
 def test_result_fields_are_present(engine, uninformative_priors):
     """
-    Each BayesianResult should carry all expected fields.
+    Each BayesianResult should carry all expected fields with sensible values.
+    Covers both the original fields and the two added in the engine refactor
+    (prob_beat_control, expected_uplift).
     """
     beta_prior, lift_prior = uninformative_priors
     results = engine.run_probability_analysis(
         data=make_experiment(
             [1000, 1000], [50, 100],
-            labels=["Control", "Challenger"]
+            labels=["Control", "Challenger"],
         ),
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -144,8 +157,9 @@ def test_result_fields_are_present(engine, uninformative_priors):
     r = results[0]
     assert r.variant_label == "Challenger"
     assert r.control_label == "Control"
-    assert 0.0 <= r.prob_being_best  <= 1.0
+    assert 0.0 <= r.prob_being_best <= 1.0
     assert 0.0 <= r.prob_beat_control <= 1.0
+    assert r.expected_uplift >= 0.0   # np.maximum(..., 0) guarantees non-negative
     assert r.expected_loss >= 0.0
     assert isinstance(r.conclusion, str) and len(r.conclusion) > 0
 
@@ -159,7 +173,6 @@ def _get_prob_best_overall(engine, visitors, conversions, labels):
         beta_prior=get_beta_prior(),
         lift_prior=get_lift_prior(0.0, "uninformative"),
     )
-    # Reconstruct full list including control (index 0)
     control_pbb = 1.0 - sum(r.prob_being_best for r in results)
     return [control_pbb] + [r.prob_being_best for r in results]
 
@@ -229,60 +242,52 @@ def test_monetary_three_variants_returns_two_results(engine, uninformative_prior
     assert results[1]["variant_label"] == "Variant C"
 
 
-def test_monetary_invalid_runtime_returns_empty(engine, uninformative_priors):
+def test_monetary_invalid_runtime_rejected_by_model():
     """
-    runtime_days <= 0 should return an empty list without crashing.
+    BusinessCaseInput rejects runtime_days=0 at the model boundary via
+    Field(..., gt=0). The engine layer never receives this invalid input.
     """
-    beta_prior, lift_prior = uninformative_priors
-    visitors = [1000, 1000]
-    conversions = [100, 110]
-    labels = ["Control", "Challenger"]
-
-    results = engine.run_monetary_projection(
-        visitors=visitors,
-        conversions=conversions,
-        biz_case=BusinessCaseInput(
+    with pytest.raises(ValidationError):
+        BusinessCaseInput(
             aovs={"Control": 50.0, "Challenger": 60.0},
             runtime_days=0,
             projection_period=180,
-        ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
-        variant_labels=labels,
-        beta_prior=beta_prior,
-        lift_prior=lift_prior,
-    )
-    assert results == []
+        )
 
 
-def test_monetary_label_mismatch_returns_empty(engine, uninformative_priors):
+def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors):
     """
-    Mismatched variant_labels length should return an empty list safely.
+    Passing a variant_labels list whose length doesn't match visitors raises
+    ValueError. Unlike runtime_days, this mismatch is not guaranteed to be
+    caught by Pydantic (variant_labels is a plain function parameter), so
+    run_monetary_projection enforces it explicitly.
     """
     beta_prior, lift_prior = uninformative_priors
     visitors = [1000, 1000]
     conversions = [100, 110]
     labels = ["Control", "Challenger"]
 
-    results = engine.run_monetary_projection(
-        visitors=visitors,
-        conversions=conversions,
-        biz_case=BusinessCaseInput(
-            aovs={"Control": 50.0, "Challenger": 60.0},
-            runtime_days=30,
-            projection_period=90,
-        ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
-        variant_labels=["OnlyOneLabel"],
-        beta_prior=beta_prior,
-        lift_prior=lift_prior,
-    )
-    assert results == []
+    with pytest.raises(ValueError, match="variant_labels has 1 entries but visitors has 2"):
+        engine.run_monetary_projection(
+            visitors=visitors,
+            conversions=conversions,
+            biz_case=BusinessCaseInput(
+                aovs={"Control": 50.0, "Challenger": 60.0},
+                runtime_days=30,
+                projection_period=90,
+            ),
+            prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+            variant_labels=["OnlyOneLabel"],
+            beta_prior=beta_prior,
+            lift_prior=lift_prior,
+        )
 
 
 def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
     """
     A very low CV should produce monetary results close to those from a
-    constant AOV, confirming the log-normal parameterisation is unbiased.
+    high-CV run, confirming the log-normal parameterisation is unbiased:
+    E[AOV] = mean_aov regardless of spread.
     """
     beta_prior, lift_prior = uninformative_priors
     visitors = [5000, 5000]
@@ -310,7 +315,7 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
         aov_cv=1.5,
     )
 
-    # Point estimates (uplift) should be close regardless of CV; only spread differs
-    low  = result_low_cv[0]["expected_uplift"]
+    # Point estimates should converge regardless of spread (within 10%).
+    low = result_low_cv[0]["expected_uplift"]
     high = result_high_cv[0]["expected_uplift"]
-    assert abs(low - high) / max(abs(low), 1e-6) < 0.10  # within 10%
+    assert abs(low - high) / max(abs(low), 1e-6) < 0.10
