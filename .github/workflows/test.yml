@@ -126,12 +126,14 @@ jobs:
           pip install -e .[dev]
 
       - name: Run Unit Tests with Coverage
-        # -m "not integration" excludes tests/integration/, which import from
-        # gcp.functions.* — a module tree not installed by pip install -e .[dev].
-        # Add a separate 'integration' job that installs gcp and runs those tests.
-        # --cov-fail-under enforces a minimum coverage threshold.
+        # --ignore=tests/integration/ prevents pytest from importing
+        # test_api_handlers.py at collection time. That file has module-level
+        # imports from gcp.functions.* not installed by pip install -e .[dev].
+        # pytest imports every collected file before applying -m marker filters,
+        # so -m "not integration" alone is insufficient — the ImportError fires
+        # during collection and aborts the entire run before any test executes.
         run: |
-          pytest tests/ -m "not integration" \
+          pytest tests/ --ignore=tests/integration/ \
             --cov=foe \
             --cov-report=term-missing \
             --cov-fail-under=80
