@@ -1,6 +1,4 @@
 name: Deploy Cloud Functions
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24:
 
 on:
   workflow_run:
@@ -8,17 +6,26 @@ on:
     branches: [main]
     types:
       - completed
+  workflow_dispatch:
 
 jobs:
+  # ── 1. Build ──────────────────────────────────────────────────────────────
+  # Only proceeds if the upstream test workflow succeeded.
+  # 'completed' fires on success, failure, and cancellation — the if: guard
+  # here ensures we never deploy from a broken test run.
+  # workflow_dispatch is always allowed so the wheel can be rebuilt manually.
   build:
     name: Build Wheel
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -36,29 +43,35 @@ jobs:
           path: dist/*.whl
           retention-days: 1
 
+  # ── 2. Deploy ─────────────────────────────────────────────────────────────
+  # Deploys each function independently via fail-fast: false so a single
+  # broken module directory does not cancel the remaining deployments.
+  #
+  # Only list modules that have a corresponding gcp/functions/{module}/
+  # directory with a main.py and requirements.txt. Remove entries that are
+  # not yet implemented to prevent spurious deploy failures.
   deploy:
-    name: Deploy API Endpoints
+    name: Deploy ${{ matrix.module }} Function
     needs: build
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        module:
-          - frequentist
-          - bayesian
-          - sequential
-          - continuous
-          - behavioral
-          - interaction
-          - pretest
-          - srm
-
+        include:
+          # Memory and timeout are set per-function based on expected load.
+          # Bayesian and Sequential run heavy simulations; others are lightweight.
+          - module: frequentist
+            memory: 256MB
+            timeout: 120s
+          - module: bayesian
+            memory: 1024MB
+            timeout: 300s
     permissions:
       contents: 'read'
       id-token: 'write'
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Download wheel artifact
         uses: actions/download-artifact@v4.3.0
@@ -80,10 +93,13 @@ jobs:
       - name: Deploy ${{ matrix.module }} Function
         run: |
           gcloud functions deploy ${{ matrix.module }}-handler \
+            --gen2 \
             --runtime=python310 \
             --region=us-central1 \
             --source=gcp/functions/${{ matrix.module }} \
             --entry-point=${{ matrix.module }}_handler \
             --trigger-http \
-            --allow-unauthenticated \
-            --memory=512MB
+            --memory=${{ matrix.memory }} \
+            --timeout=${{ matrix.timeout }} \
+            --project=${{ secrets.GCP_PROJECT_ID }} \
+            --no-allow-unauthenticated
