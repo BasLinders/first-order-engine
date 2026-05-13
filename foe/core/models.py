@@ -2,11 +2,11 @@ from enum import Enum
 from datetime import date
 from typing import List, Optional, Tuple, Dict
 from pydantic import BaseModel, Field, ConfigDict, model_validator
+
 from foe.core.validators import validate_experiment_data
 
 
 # --- Frequentist ---
-
 
 class AlternativeHypothesis(str, Enum):
     """Matches the 'tail' logic; string-based for clean JSON serialization."""
@@ -108,6 +108,8 @@ class BayesianResult(BaseModel):
     variant_label: str
     control_label: str
     prob_being_best: float
+    prob_beat_control: float
+    expected_uplift: float
     expected_loss: float
     conclusion: str
     prior_alphas: Optional[List[float]] = None
