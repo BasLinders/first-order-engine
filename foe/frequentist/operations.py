@@ -3,6 +3,7 @@ import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import norm
 from typing import List, Dict, Any
+
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
 from foe.frequentist.confidence import compute_interval_difference
 
@@ -146,9 +147,9 @@ class FrequentistEngine:
         traffic volumes. The ratio φ = observed / expected is used to
         scale standard errors in run_synthesis via ExperimentInput.reduction_factor.
 
-        φ < 1 -> rate is more stable than binomial theory predicts; SE shrinks.
-        φ ≈ 1 -> rate behaves as binomial; no meaningful adjustment.
-        φ > 1 -> overdispersion detected (campaign bursts, seasonality); SE inflates.
+        φ < 1  ->  rate is more stable than binomial theory predicts; SE shrinks.
+        φ ≈ 1  ->  rate behaves as binomial; no meaningful adjustment.
+        φ > 1  ->  overdispersion detected (campaign bursts, seasonality); SE inflates.
 
         Both variances are visitor-weighted to prevent low-traffic days from
         distorting the estimate.
@@ -332,7 +333,7 @@ class FrequentistEngine:
 
             p_value = self.run_ztest(diff, se_diff, data.alternative)
             is_sig = bool(p_value < alpha)
-            ci = compute_interval_difference(diff, se_diff, alpha)
+            ci = compute_interval_difference(diff, se_diff, alpha, data.alternative)
             conclusion = self.generate_conclusion_statement(labels[i], is_sig, uplift)
 
             results.append(
