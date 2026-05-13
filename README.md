@@ -16,40 +16,63 @@
 ```text
 first-order-engine/
 │
-├── pyproject.toml              # Installable as a package: pip install first-order-engine
+├── pyproject.toml
 ├── README.md
-├── .flake8                     # Linting configuration
+├── .flake8                      
 ├── .github/
 │   └── workflows/
-│       ├── test.yml            # Multi-version pytest on push
-│       └── deploy.yml          # Parallel Cloud Function deployment on merge
+│       ├── test.yml
+│       └── deploy.yml
 │
-├── foe/                        # Main importable package
+├── foe/
 │   ├── __init__.py
-│   │
-│   ├── core/                   # Shared primitives and Pydantic models
-│   │   ├── models.py           # ExperimentInput, FrequentistResult, etc.
-│   │   └── validators.py       # Data integrity guards
-│   │
-│   ├── frequentist/            # NHST Inference (p-values, Z-stats, CUPED)
-│   ├── bayesian/               # Risk Analysis (Prob. of Being Best, AOV Projections)
-│   ├── sequential/             # "Always Valid" mSPRT (LLR Trajectories)
-│   ├── pretest/                # Planning (MDE Table, Sample Size, Prophet Forecasting)
-│   ├── srm/                    # Data Quality (Chi-Squared Diagnostics)
-│   ├── interaction/            # Factorial Analysis (Clash/Synergy Detection)
-│   ├── behavioral/             # Skewed Metrics (Welch's t-test, Log-Transforms)
-│   ├── continuous/             # Automated Decision Tree (ANOVA vs. Non-Parametric)
-│   └── viz/                    # UI Adapters (JSON-ready chart coordinates)
+│   ├── core/
+│   │   ├── __init__.py      
+│   │   ├── models.py
+│   │   ├── validators.py
+│   │   └── priors.py            
+│   ├── frequentist/
+│   │   ├── __init__.py          
+│   │   ├── operations.py
+│   │   └── confidence.py
+│   ├── bayesian/
+│   │   ├── __init__.py             
+│   │   └── operations.py
+│   ├── sequential/
+│   │   └── __init__.py              
+│   ├── pretest/
+│   │   └── __init__.py
+│   ├── srm/
+│   │   └── __init__.py
+│   ├── interaction/
+│   │   └── __init__.py
+│   ├── behavioral/
+│   │   └── __init__.py
+│   ├── continuous/
+│   │   └── __init__.py
+│   └── viz/
+│       └── __init__.py
 │
-├── gcp/                        # Google Cloud Platform adapter layer
+├── gcp/
+│   ├── __init__.py                  
 │   └── functions/
+│       ├── __init__.py              
 │       ├── frequentist/
-│       │   └── main.py         # Entry point → calls foe.frequentist
-│       └── ...                 # Identical structure for all modules
+│       │   ├── __init__.py          
+│       │   ├── main.py
+│       │   ├── requirements.txt     # (./foe-*.whl, flask)
+│       │   └── .gcloudignore        
+│       └── ...                      # identical structure per module
 │
-└── tests/                      # Comprehensive Test Suite
-    ├── unit/                   # Mathematical validation
-    └── integration/            # End-to-end API handler tests
+└── tests/
+    ├── conftest.py                  # (shared fixtures, marker registration)
+    ├── unit/
+    │   ├── __init__.py              
+    │   ├── test_frequentist.py
+    │   └── test_bayesian.py
+    └── integration/
+        ├── __init__.py              
+        └── test_api_handlers.py
 ```
 
 ## System Design
