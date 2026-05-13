@@ -1,10 +1,16 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
 from flask import Flask
 
-from gcp.functions.frequentist.main import frequentist_handler
-from gcp.functions.bayesian.main import bayesian_handler
+# All tests in this file require the gcp package to be installed.
+# They are excluded from the standard unit test run via -m "not integration".
+# Run explicitly with: pytest -m integration
+pytestmark = pytest.mark.integration
+
+from gcp.functions.frequentist.main import frequentist_handler  # noqa: E402
+from gcp.functions.bayesian.main import bayesian_handler        # noqa: E402
 
 # A minimal Flask app is needed only to provide an application context.
 # The handlers themselves are GCP Cloud Function entrypoints that use Flask
@@ -49,8 +55,6 @@ class TestAPIHandlers:
             "confidence_level": 0.95,
         }
         with _app.app_context():
-            # Handlers return (flask.Response, status_code, headers).
-            # response.data contains the JSON bytes produced by flask.jsonify.
             response, status_code, headers = frequentist_handler(_make_request("POST", data))
 
         assert status_code == 200
@@ -63,10 +67,6 @@ class TestAPIHandlers:
     def test_frequentist_handler_invalid_data(self):
         """
         Invalid POST (conversions exceed visitors) → 422 with error detail.
-
-        validators.py now includes the variant index and values in the message,
-        e.g. 'Variant at index 0: conversions (150) exceed visitors (100).'
-        The handler must propagate this detail in the response body.
         """
         data = {"visitors": [100, 100], "conversions": [150, 20]}
         with _app.app_context():
@@ -78,19 +78,14 @@ class TestAPIHandlers:
         assert "conversions" in response_data.get("details", "")
 
     def test_frequentist_handler_method_not_allowed(self):
-        """
-        Non-POST/OPTIONS methods → 405 Method Not Allowed.
-        """
+        """Non-POST/OPTIONS methods → 405."""
         with _app.app_context():
             response, status_code, headers = frequentist_handler(_make_request("GET", {}))
 
         assert status_code == 405
 
     def test_cors_preflight_frequentist(self):
-        """
-        OPTIONS request → 204 with the correct CORS headers.
-        Must run inside app_context for consistency with other handler tests.
-        """
+        """OPTIONS request → 204 with the correct CORS headers."""
         with _app.app_context():
             response, status_code, headers = frequentist_handler(_make_request("OPTIONS", {}))
 
@@ -102,12 +97,7 @@ class TestAPIHandlers:
     # ------------------------------------------------------------------
 
     def test_bayesian_handler_invalid_data(self):
-        """
-        Invalid POST (conversions exceed visitors on variant 0) → 422.
-
-        Checks both the top-level error key and that the detail message
-        surfaces the index-aware text from our updated validators.py.
-        """
+        """Invalid POST → 422 with index-aware error detail."""
         data = {"visitors": [100, 100], "conversions": [150, 20]}
         with _app.app_context():
             response, status_code, headers = bayesian_handler(_make_request("POST", data))
@@ -118,18 +108,14 @@ class TestAPIHandlers:
         assert "conversions" in response_data.get("details", "")
 
     def test_bayesian_handler_method_not_allowed(self):
-        """
-        Non-POST/OPTIONS methods → 405 Method Not Allowed.
-        """
+        """Non-POST/OPTIONS methods → 405."""
         with _app.app_context():
             response, status_code, headers = bayesian_handler(_make_request("GET", {}))
 
         assert status_code == 405
 
     def test_cors_preflight_bayesian(self):
-        """
-        OPTIONS request on the Bayesian handler → 204 with CORS headers.
-        """
+        """OPTIONS request on the Bayesian handler → 204 with CORS headers."""
         with _app.app_context():
             response, status_code, headers = bayesian_handler(_make_request("OPTIONS", {}))
 
