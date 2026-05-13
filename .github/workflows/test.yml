@@ -1,6 +1,4 @@
 name: Python Tests & Linting
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   push:
@@ -14,18 +12,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ── 1. Auto-format ────────────────────────────────────────────────────────
+  # Only runs on push events: git-auto-commit-action requires write access to
+  # the target branch, which GITHUB_TOKEN does not have for fork PR branches.
   autoformat:
     name: Auto-fix Style
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
@@ -33,13 +35,19 @@ jobs:
       - name: Install formatters
         run: pip install autopep8 autoflake
 
-      - name: Remove unused imports
+      - name: Remove unused variables
+        # --remove-all-unused-imports is intentionally omitted: autoflake cannot
+        # detect imports kept for side effects or re-exports (e.g. validator
+        # imports used only inside Pydantic model_validator bodies).
+        # Unused imports are caught and reported by flake8 (F401) in the lint job.
         run: |
           autoflake --in-place --recursive \
-            --remove-all-unused-imports \
+            --remove-unused-variables \
             .
 
       - name: Fix style issues
+        # max-line-length matches the flake8 limit set in the lint job and in
+        # setup.cfg / pyproject.toml so autopep8 and flake8 agree on line length.
         run: |
           autopep8 --in-place --recursive \
             --max-line-length 88 \
@@ -47,19 +55,28 @@ jobs:
             .
 
       - name: Commit fixes
-        uses: stefanzweifel/git-auto-commit-action@v7
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "style: auto-fix flake8 cosmetic issues"
 
+  # ── 2. Lint ───────────────────────────────────────────────────────────────
+  # Runs after autoformat on push; runs directly on pull_request (no autoformat
+  # commit is attempted on PRs, so lint checks the submitted code as-is).
   lint:
     name: Code Quality (Flake8)
     runs-on: ubuntu-latest
+    needs:
+      - autoformat
+    if: |
+      always() &&
+      (needs.autoformat.result == 'success' ||
+       needs.autoformat.result == 'skipped')
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: "pip"
@@ -68,22 +85,37 @@ jobs:
         run: pip install flake8
 
       - name: Run Flake8
-        run: flake8 .
+        # --max-line-length must match autopep8's limit so the two tools agree.
+        # Configure once in setup.cfg [flake8] or pyproject.toml [tool.flake8]
+        # to avoid repeating this flag here and in the autoformat step.
+        run: flake8 . --max-line-length 88
 
+  # ── 3. Test ───────────────────────────────────────────────────────────────
+  # Runs only after both autoformat and lint succeed (or autoformat is skipped).
+  # Integration tests require the gcp package to be importable; they are
+  # excluded here with -m "not integration" and should be run in a separate
+  # job that installs the full gcp module tree.
   test:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    needs: lint
+    needs:
+      - autoformat
+      - lint
+    if: |
+      always() &&
+      (needs.autoformat.result == 'success' ||
+       needs.autoformat.result == 'skipped') &&
+      needs.lint.result == 'success'
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -93,6 +125,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
-      - name: Run Pytest with Coverage
+      - name: Run Unit Tests with Coverage
+        # -m "not integration" excludes tests/integration/, which import from
+        # gcp.functions.* — a module tree not installed by pip install -e .[dev].
+        # Add a separate 'integration' job that installs gcp and runs those tests.
+        # --cov-fail-under enforces a minimum coverage threshold.
         run: |
-          pytest tests/ --cov=foe --cov-report=term-missing
+          pytest tests/ -m "not integration" \
+            --cov=foe \
+            --cov-report=term-missing \
+            --cov-fail-under=80
