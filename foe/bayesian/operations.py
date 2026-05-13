@@ -23,8 +23,8 @@ class LiftPrior:
 
 
 _LIFT_PRIOR_STD: Dict[str, float] = {
-    "skeptical": 0.10,
-    "moderate": 0.25,
+    "skeptical":     0.10,
+    "moderate":      0.25,
     "uninformative": 1.00,
 }
 
@@ -324,6 +324,12 @@ class BayesianEngine:
         lift_prior = lift_prior or get_lift_prior(0.0, "uninformative")
 
         num_variants = len(visitors)
+
+        if len(variant_labels) != num_variants:
+            raise ValueError(
+                f"variant_labels has {len(variant_labels)} entries but visitors has "
+                f"{num_variants}. They must be the same length."
+            )
 
         # (num_variants, n_simulations)
         samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
