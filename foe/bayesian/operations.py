@@ -367,7 +367,7 @@ class BayesianEngine:
                 mask=positive_mask,
             )
             expected_daily_loss = self._weighted_mean_masked(
-                values=diff * sampled_control_aov,
+                values=np.abs(diff) * sampled_control_aov,
                 weights=weights,
                 mask=negative_mask,
             )
@@ -390,7 +390,7 @@ class BayesianEngine:
                 "prob_best_overall": prob_best_overall[i],
                 "expected_uplift": round(uplift, 2),
                 "expected_risk": round(risk, 2),
-                "expected_total_contribution": round(uplift + risk, 2),
+                "expected_total_contribution": round(uplift - risk, 2),
                 "conclusion": conclusion,
             })
 

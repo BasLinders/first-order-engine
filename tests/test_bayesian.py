@@ -1,5 +1,4 @@
 import pytest
-import numpy as np
 from pydantic import ValidationError
 
 from foe.bayesian.operations import (
@@ -7,7 +6,6 @@ from foe.bayesian.operations import (
     get_beta_prior,
     get_lift_prior,
     BetaPrior,
-    LiftPrior,
 )
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
@@ -281,6 +279,105 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
             beta_prior=beta_prior,
             lift_prior=lift_prior,
         )
+
+
+def test_monetary_risk_is_always_non_negative(engine, uninformative_priors):
+    """
+    expected_risk must be a non-negative magnitude regardless of whether the
+    variant wins or loses. A losing variant should produce a positive risk
+    number, not a negative one.
+    """
+    beta_prior, lift_prior = uninformative_priors
+    visitors = [1000, 1000]
+    conversions = [200, 100]  # Control is clearly better — variant is a loser
+    labels = ["Control", "Loser"]
+
+    results = engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Loser": 50.0},
+            runtime_days=30,
+            projection_period=90,
+        ),
+        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+        variant_labels=labels,
+        beta_prior=beta_prior,
+        lift_prior=lift_prior,
+    )
+
+    r = results[0]
+    assert r["expected_risk"] >= 0.0
+    # Net contribution for a loser should be negative (uplift near zero, risk positive).
+    assert r["expected_total_contribution"] < 0.0
+
+
+def test_alpha_beta_prior_in_biz_case_influences_projection(engine):
+    """
+    BusinessCaseInput.alpha_prior and beta_prior are the user-facing controls
+    for the Beta prior used in run_monetary_projection. A strongly informative
+    prior (large alpha+beta) should pull the posterior toward the prior mean and
+    produce a different expected_uplift than the default uninformative Beta(1,1).
+    """
+    visitors = [1000, 1000]
+    conversions = [100, 150]
+    labels = ["Control", "Challenger"]
+
+    # Default uninformative prior: Beta(1, 1)
+    result_flat = engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Challenger": 50.0},
+            runtime_days=30,
+            projection_period=90,
+            alpha_prior=1.0,
+            beta_prior=1.0,
+        ),
+        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+        variant_labels=labels,
+        beta_prior=BetaPrior(alpha=1.0, beta=1.0),
+    )
+
+    # Strong prior centred near 50% conversion — heavily regularises the posterior.
+    result_strong = engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Challenger": 50.0},
+            runtime_days=30,
+            projection_period=90,
+            alpha_prior=500.0,
+            beta_prior=500.0,
+        ),
+        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+        variant_labels=labels,
+        beta_prior=BetaPrior(alpha=500.0, beta=500.0),
+    )
+
+    # The strong prior shrinks the observed lift; uplift should be meaningfully lower.
+    assert result_strong[0]["expected_uplift"] < result_flat[0]["expected_uplift"]
+
+
+def test_biz_case_accepted_via_experiment_input():
+    """
+    ExperimentInput now carries an optional biz_case field so the Bayesian
+    handler can receive a business case through a single JSON payload.
+    Verifies the field is parsed and accessible.
+    """
+    biz = BusinessCaseInput(
+        aovs={"Control": 50.0, "Challenger": 60.0},
+        runtime_days=14,
+        projection_period=90,
+    )
+    data = ExperimentInput(
+        visitors=[1000, 1000],
+        conversions=[100, 120],
+        labels=["Control", "Challenger"],
+        biz_case=biz,
+    )
+    assert data.biz_case is not None
+    assert data.biz_case.aovs["Control"] == 50.0
 
 
 def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):

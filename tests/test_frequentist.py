@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from foe.frequentist.operations import FrequentistEngine
+from foe.frequentist.confidence import compute_non_inferiority
 from foe.core.models import ExperimentInput, AlternativeHypothesis
 
 
@@ -104,6 +105,155 @@ def test_input_validation_integration():
     # Pydantic v2 raises ValidationError before the model_validator runs.
     with pytest.raises(ValidationError, match="at least 2 items"):
         ExperimentInput(visitors=[100], conversions=[10])
+
+
+def test_confidence_level_zero_rejected():
+    """
+    confidence_level=0.0 is now rejected (gt=0.0). Previously ge=0.0 allowed
+    it, producing alpha=1.0 where every test was always significant.
+    """
+    with pytest.raises(ValidationError):
+        ExperimentInput(
+            visitors=[1000, 1000],
+            conversions=[100, 110],
+            confidence_level=0.0,
+        )
+
+
+def test_sidak_correction_applied_for_multiple_variants(engine):
+    """
+    With three variants, apply_sidak tightens alpha below the raw 0.05.
+    A marginal effect that would be significant in a simple A/B test (alpha=0.05)
+    should become insignificant once the per-comparison alpha is corrected.
+
+    apply_sidak(0.05, 3) ≈ 0.0253. The control vs Challenger A comparison is
+    constructed to land between 0.025 and 0.05 so it flips from significant to
+    not significant only when the correction is in effect.
+    """
+    # Challenger A: 563/5000 = 11.26% vs control 10%.
+    # SE ≈ 0.00616, z ≈ 2.04, p ≈ 0.041 — between Sidak threshold (~0.025) and 0.05.
+    data = ExperimentInput(
+        visitors=[5000, 5000, 5000],
+        conversions=[500, 563, 900],
+        labels=["Control", "Challenger A", "Challenger B"],
+        confidence_level=0.95,
+    )
+    results = engine.run_synthesis(data)
+    challenger_a = results[0]
+
+    # p_value is between the Sidak-adjusted threshold (~0.025) and raw alpha (0.05).
+    assert 0.025 < challenger_a.p_value < 0.05
+    # With Sidak applied, this should NOT be significant.
+    assert challenger_a.is_significant is False
+
+
+def test_bootstrap_power_one_sided_greater_than_two_sided(engine):
+    """
+    For a winning challenger, one-sided (GREATER) bootstrap power should be
+    higher than two-sided power, since the one-sided test concentrates all
+    rejection power in the direction of the observed effect.
+    """
+    power_two_sided = FrequentistEngine.run_vectorized_bootstrap_power(
+        ctrl_conv=100, ctrl_n=1000,
+        chal_conv=130, chal_n=1000,
+        alpha=0.05,
+        n_bootstraps=5000,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    power_one_sided = FrequentistEngine.run_vectorized_bootstrap_power(
+        ctrl_conv=100, ctrl_n=1000,
+        chal_conv=130, chal_n=1000,
+        alpha=0.05,
+        n_bootstraps=5000,
+        alternative=AlternativeHypothesis.GREATER,
+    )
+    assert power_one_sided > power_two_sided
+
+
+def test_less_alternative_produces_lower_bound_only_ci(engine):
+    """
+    LESS alternative should return a CI with -inf lower bound and finite upper bound.
+    Also verifies the p-value equals half the two-sided p-value for an in-direction effect.
+    """
+    visitors = [1000, 1000]
+    conversions = [120, 100]  # challenger is worse — LESS is the correct direction
+
+    less = engine.run_synthesis(
+        ExperimentInput(
+            visitors=visitors,
+            conversions=conversions,
+            alternative=AlternativeHypothesis.LESS,
+        )
+    )[0]
+
+    two_sided = engine.run_synthesis(
+        ExperimentInput(
+            visitors=visitors,
+            conversions=conversions,
+            alternative=AlternativeHypothesis.TWO_SIDED,
+        )
+    )[0]
+
+    assert less.ci_diff[0] == float("-inf")
+    assert less.ci_diff[1] != float("inf")
+    assert less.p_value == pytest.approx(two_sided.p_value / 2)
+
+
+def test_run_ztest_zero_se_returns_one():
+    """Zero SE must return p_value=1.0 rather than divide-by-zero."""
+    p = FrequentistEngine.run_ztest(
+        diff=0.01, se_diff=0.0, alternative=AlternativeHypothesis.TWO_SIDED
+    )
+    assert p == 1.0
+
+
+def test_analytical_power_high_effect_near_one():
+    """A large effect relative to SE should yield power close to 1.0."""
+    power = FrequentistEngine.calculate_analytical_power(
+        diff=0.10,
+        se_diff=0.005,
+        alpha=0.05,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    assert power > 0.99
+
+
+def test_analytical_power_zero_se_returns_zero():
+    """Zero SE is an invalid input; power should be 0.0 rather than crash."""
+    power = FrequentistEngine.calculate_analytical_power(
+        diff=0.01,
+        se_diff=0.0,
+        alpha=0.05,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    assert power == 0.0
+
+
+def test_compute_non_inferiority_passing():
+    """Challenger within the NI margin should be declared non-inferior."""
+    result = compute_non_inferiority(
+        p_ctrl=0.10, p_chal=0.095, se_diff=0.005, margin=0.02, alpha=0.05
+    )
+    assert result["is_non_inferior"] is True
+    assert result["p_value"] < 0.05
+    assert "Non-inferiority established" in result["conclusion"]
+
+
+def test_compute_non_inferiority_failing():
+    """Challenger far below control should fail the NI test."""
+    result = compute_non_inferiority(
+        p_ctrl=0.10, p_chal=0.05, se_diff=0.005, margin=0.02, alpha=0.05
+    )
+    assert result["is_non_inferior"] is False
+    assert "Too Risky" in result["conclusion"]
+
+
+def test_compute_non_inferiority_invalid_margin():
+    """margin outside (0, 1) must raise ValueError."""
+    with pytest.raises(ValueError, match="proportion"):
+        compute_non_inferiority(
+            p_ctrl=0.10, p_chal=0.09, se_diff=0.005, margin=1.5, alpha=0.05
+        )
 
 
 def test_variance_reduction_factor_tightens_intervals(engine):

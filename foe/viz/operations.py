@@ -1,4 +1,4 @@
-import string
+﻿import string
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, beta
@@ -194,7 +194,7 @@ class VizEngine:
         lower = float(trajectory_df['lower_bound'].iloc[0])
         max_vis_val = trajectory_df['max_visitors'].iloc[0]
         max_visitors_out = None if np.isnan(max_vis_val) else int(max_vis_val)
-        
+
         # Ensure dates are JSON serializable
         df_safe = trajectory_df.copy()
         if pd.api.types.is_datetime64_any_dtype(df_safe["measurement_date"]):
@@ -208,11 +208,11 @@ class VizEngine:
             visitors_col = 'visitors_var' if 'visitors_var' in v_df.columns else 'visitors'
             trajectories.append({
                 "variant": variant,
-                "data": v_df[['measurement_date', 'llr' , 'status']].rename(
+                "data": v_df[['measurement_date', 'llr', 'status']].rename(
                     columns={'measurement_date': 'date', visitors_col: 'visitors'}
                 ).to_dict(orient='records')
             })
-            
+
         return {
             "max_visitors": max_visitors_out,
             "upper_bound": upper,

@@ -2,7 +2,7 @@ import functions_framework
 from flask import jsonify
 from pydantic import ValidationError
 from foe.core.models import ExperimentInput
-from foe.bayesian.operations import BayesianEngine
+from foe.bayesian.operations import BayesianEngine, BetaPrior
 
 
 @functions_framework.http
@@ -11,7 +11,7 @@ def bayesian_handler(request):
     HTTP Cloud Function entry point for Bayesian A/B Analysis.
     Supports informed priors and optional business case projections.
     """
-    
+
     # 1. Handle CORS
     if request.method == 'OPTIONS':
         headers = {
@@ -40,32 +40,36 @@ def bayesian_handler(request):
         input_data = ExperimentInput(**request_json)
         engine = BayesianEngine()
 
-        # 4. Step One: Run Probability Analysis
-        # We use getattr to safely grab optional prior fields if they exist in your Pydantic model
-        prob_results = engine.run_probability_analysis(
-            visitors=input_data.visitors,
-            conversions=input_data.conversions,
-            prior_alphas=getattr(input_data, 'prior_alphas', None),
-            prior_betas=getattr(input_data, 'prior_betas', None)
-        )
+        # 4. Run Probability Analysis
+        prob_results = engine.run_probability_analysis(data=input_data)
 
-        # 5. Step Two: Check for Business Case
-        # If the user provided AOV and Projection data, run the monetary engine
-        if hasattr(input_data, 'biz_case') and input_data.biz_case:
+        # 5. If a business case was provided, run the monetary projection
+        if input_data.biz_case:
+            labels = input_data.labels or [
+                f"Variant {i}" for i in range(len(input_data.visitors))
+            ]
+            control_pbb = 1.0 - sum(r.prob_being_best for r in prob_results)
+            prob_best_overall = [control_pbb] + [r.prob_being_best for r in prob_results]
+
+            beta_prior = BetaPrior(
+                alpha=input_data.biz_case.alpha_prior,
+                beta=input_data.biz_case.beta_prior,
+            )
             full_results = engine.run_monetary_projection(
                 visitors=input_data.visitors,
                 conversions=input_data.conversions,
                 biz_case=input_data.biz_case,
-                prob_best_overall=prob_results['prob_being_best'],
-                variant_labels=input_data.labels
+                prob_best_overall=prob_best_overall,
+                variant_labels=labels,
+                beta_prior=beta_prior,
             )
             return (jsonify(full_results), 200, headers)
 
-        # 6. Fallback: Return raw probabilities if no business case provided
-        return (jsonify(prob_results), 200, headers)
+        # 6. Fallback: return probability results
+        payload = [r.model_dump() for r in prob_results]
+        return (jsonify(payload), 200, headers)
 
     except ValidationError as e:
-        # 422 Unprocessable Entity: The schema is wrong or the test data is logically invalid
         return (
             jsonify(
                 {
@@ -78,7 +82,6 @@ def bayesian_handler(request):
         )
 
     except Exception as e:
-        # 500 Internal Server Error: Something went wrong deep in the math engine
         return (
             jsonify({"error": "Internal Engine Error", "message": str(e)}),
             500,

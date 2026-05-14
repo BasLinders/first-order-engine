@@ -263,6 +263,7 @@ class FrequentistEngine:
         chal_n: int,
         alpha: float = 0.05,
         n_bootstraps: int = 10000,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> float:
         """
         Calculates observed power via high-performance vectorized bootstrapping.
@@ -293,7 +294,13 @@ class FrequentistEngine:
         )
 
         z_stats = (means_chal - means_ctrl) / se_pooled
-        p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
+
+        if alternative == AlternativeHypothesis.GREATER:
+            p_values = 1 - norm.cdf(z_stats)
+        elif alternative == AlternativeHypothesis.LESS:
+            p_values = norm.cdf(z_stats)
+        else:
+            p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
 
         return float(np.mean(p_values < alpha))
 
@@ -314,7 +321,7 @@ class FrequentistEngine:
         labels = data.labels or [f"Variant {i}" for i in range(len(data.visitors))]
         p_ctrl = data.conversions[0] / data.visitors[0]
         n_ctrl = data.visitors[0]
-        alpha = 1.0 - data.confidence_level
+        alpha = apply_sidak(1.0 - data.confidence_level, len(data.visitors))
 
         results = []
         for i in range(1, len(data.visitors)):

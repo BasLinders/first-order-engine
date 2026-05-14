@@ -1,4 +1,4 @@
-import numpy as np
+﻿import numpy as np
 import pandas as pd
 from typing import Tuple, Dict, Optional, Union
 from enum import Enum
@@ -14,7 +14,7 @@ class SequentialEngine:
     """
     Core engine for Mixture Sequential Probability Ratio Testing (mSPRT).
     """
-    
+
     @staticmethod
     def conditional_power_check(
         current_llr: float,
@@ -28,19 +28,19 @@ class SequentialEngine:
         """
         if total_visitors == 0:
             return {"can_recover": True, "projected_llr": 0.0}
-    
+
         remaining = max_visitors - total_visitors
         if remaining <= 0:
             return {"can_recover": current_llr >= upper_bound, "projected_llr": current_llr}
-    
+
         llr_per_visitor = current_llr / total_visitors
         projected_llr = current_llr + (llr_per_visitor * remaining)
-    
+
         return {
             "can_recover": projected_llr >= upper_bound,
             "projected_llr": round(projected_llr, 4)
         }
-        
+
     @staticmethod
     def generate_sequential_conclusion(
         variant_name: str,
@@ -101,8 +101,8 @@ class SequentialEngine:
                 # ONE-SAMPLE LOGIC
                 valid_mask = n_var > 0
                 p_base = fixed_baseline_cr
-                p_var = x_var / np.maximum(n_var, 1) 
-                
+                p_var = x_var / np.maximum(n_var, 1)
+
                 variance = (p_base * (1 - p_base)) / np.maximum(n_var, 1)
                 diff = p_var - p_base
 
@@ -180,7 +180,7 @@ class SequentialEngine:
                 base
             )
         return base
-    
+
     def process_test_trajectory(
         self,
         df: pd.DataFrame,
@@ -235,12 +235,12 @@ class SequentialEngine:
                     x_ctrl=merged["conversions_ctrl"].values,
                     tau=tau
                 )
-                
+
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
 
                 merged['max_visitors'] = max_visitors if max_visitors is not None else np.nan
-                
+
                 # Add a simple status flag for UI charting colors
                 merged['status'] = self._assign_status(merged, upper, lower, 'visitors_var', max_visitors)
 
@@ -259,12 +259,12 @@ class SequentialEngine:
                     tau=tau,
                     fixed_baseline_cr=baseline_cr
                 )
-                
+
                 merged['upper_bound'] = upper
                 merged['lower_bound'] = lower
-                
+
                 merged['status'] = self._assign_status(merged, upper, lower, 'visitors', max_visitors)
-                
+
                 results.append(merged)
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
