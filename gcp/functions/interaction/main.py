@@ -1,4 +1,4 @@
-import functions_framework
+﻿import functions_framework
 import pandas as pd
 from flask import jsonify
 from foe.interaction.operations import InteractionEngine
@@ -19,14 +19,14 @@ def interaction_handler(request):
 
     headers = {"Access-Control-Allow-Origin": "*"}
     request_json = request.get_json(silent=True)
-    
+
     data = request_json.get('data')
     kpi = request_json.get('kpi')
-    factors = request_json.get('factors') # List of column names
+    factors = request_json.get('factors')  # List of column names
 
     if not request_json:
         return (jsonify({"error": "Bad Request", "message": "Missing JSON payload"}), 400, headers)
-    
+
     try:
         df = pd.DataFrame(data)
         engine = InteractionEngine()

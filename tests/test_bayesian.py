@@ -1,5 +1,4 @@
 import pytest
-import numpy as np
 from pydantic import ValidationError
 
 from foe.bayesian.operations import (
@@ -7,7 +6,6 @@ from foe.bayesian.operations import (
     get_beta_prior,
     get_lift_prior,
     BetaPrior,
-    LiftPrior,
 )
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
