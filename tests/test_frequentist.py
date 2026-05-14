@@ -106,6 +106,68 @@ def test_input_validation_integration():
         ExperimentInput(visitors=[100], conversions=[10])
 
 
+def test_confidence_level_zero_rejected():
+    """
+    confidence_level=0.0 is now rejected (gt=0.0). Previously ge=0.0 allowed
+    it, producing alpha=1.0 where every test was always significant.
+    """
+    with pytest.raises(ValidationError):
+        ExperimentInput(
+            visitors=[1000, 1000],
+            conversions=[100, 110],
+            confidence_level=0.0,
+        )
+
+
+def test_sidak_correction_applied_for_multiple_variants(engine):
+    """
+    With three variants, apply_sidak tightens alpha below the raw 0.05.
+    A marginal effect that would be significant in a simple A/B test (alpha=0.05)
+    should become insignificant once the per-comparison alpha is corrected.
+
+    apply_sidak(0.05, 3) ≈ 0.0253. The control vs Challenger A comparison is
+    constructed to land between 0.025 and 0.05 so it flips from significant to
+    not significant only when the correction is in effect.
+    """
+    # Tuned to produce a two-sided p-value around 0.035 (between Sidak and raw alpha).
+    data = ExperimentInput(
+        visitors=[5000, 5000, 5000],
+        conversions=[500, 545, 900],
+        labels=["Control", "Challenger A", "Challenger B"],
+        confidence_level=0.95,
+    )
+    results = engine.run_synthesis(data)
+    challenger_a = results[0]
+
+    # p_value is between the Sidak-adjusted threshold (~0.025) and raw alpha (0.05).
+    assert 0.025 < challenger_a.p_value < 0.05
+    # With Sidak applied, this should NOT be significant.
+    assert challenger_a.is_significant is False
+
+
+def test_bootstrap_power_one_sided_greater_than_two_sided(engine):
+    """
+    For a winning challenger, one-sided (GREATER) bootstrap power should be
+    higher than two-sided power, since the one-sided test concentrates all
+    rejection power in the direction of the observed effect.
+    """
+    power_two_sided = FrequentistEngine.run_vectorized_bootstrap_power(
+        ctrl_conv=100, ctrl_n=1000,
+        chal_conv=130, chal_n=1000,
+        alpha=0.05,
+        n_bootstraps=5000,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    power_one_sided = FrequentistEngine.run_vectorized_bootstrap_power(
+        ctrl_conv=100, ctrl_n=1000,
+        chal_conv=130, chal_n=1000,
+        alpha=0.05,
+        n_bootstraps=5000,
+        alternative=AlternativeHypothesis.GREATER,
+    )
+    assert power_one_sided > power_two_sided
+
+
 def test_variance_reduction_factor_tightens_intervals(engine):
     """
     Providing a reduction_factor < 1.0 should reduce the standard error

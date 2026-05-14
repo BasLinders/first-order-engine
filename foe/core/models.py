@@ -50,7 +50,7 @@ class ExperimentInput(BaseModel):
         ..., description="List of conversion counts per variant", min_length=2
     )
     alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
-    confidence_level: float = Field(0.95, ge=0.0, lt=1.0)
+    confidence_level: float = Field(0.95, gt=0.0, lt=1.0)
     reduction_factor: float = Field(
         1.0,
         description=(
@@ -61,6 +61,9 @@ class ExperimentInput(BaseModel):
     )
     labels: Optional[List[str]] = Field(
         None, description="Names of the variants (e.g., ['Control', 'Treatment'])"
+    )
+    biz_case: Optional[BusinessCaseInput] = Field(
+        None, description="Optional business case for monetary risk projections (Bayesian only)"
     )
 
     @model_validator(mode="after")
