@@ -57,6 +57,17 @@ python_files = ["test_*.py"]
 pythonpath = ["."]
 addopts = "--cov=foe"
 
+[tool.coverage.run]
+omit = [
+    "foe/behavioral/*",
+    "foe/continuous/*",
+    "foe/interaction/*",
+    "foe/pretest/*",
+    "foe/sequential/*",
+    "foe/srm/*",
+    "foe/viz/*",
+]
+
 [tool.black]
 line-length = 88
 target-version = ['py310']

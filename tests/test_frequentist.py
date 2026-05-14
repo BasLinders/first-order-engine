@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from foe.frequentist.operations import FrequentistEngine
+from foe.frequentist.confidence import compute_non_inferiority
 from foe.core.models import ExperimentInput, AlternativeHypothesis
 
 
@@ -129,10 +130,11 @@ def test_sidak_correction_applied_for_multiple_variants(engine):
     constructed to land between 0.025 and 0.05 so it flips from significant to
     not significant only when the correction is in effect.
     """
-    # Tuned to produce a two-sided p-value around 0.035 (between Sidak and raw alpha).
+    # Challenger A: 563/5000 = 11.26% vs control 10%.
+    # SE ≈ 0.00616, z ≈ 2.04, p ≈ 0.041 — between Sidak threshold (~0.025) and 0.05.
     data = ExperimentInput(
         visitors=[5000, 5000, 5000],
-        conversions=[500, 545, 900],
+        conversions=[500, 563, 900],
         labels=["Control", "Challenger A", "Challenger B"],
         confidence_level=0.95,
     )
@@ -166,6 +168,92 @@ def test_bootstrap_power_one_sided_greater_than_two_sided(engine):
         alternative=AlternativeHypothesis.GREATER,
     )
     assert power_one_sided > power_two_sided
+
+
+def test_less_alternative_produces_lower_bound_only_ci(engine):
+    """
+    LESS alternative should return a CI with -inf lower bound and finite upper bound.
+    Also verifies the p-value equals half the two-sided p-value for an in-direction effect.
+    """
+    visitors = [1000, 1000]
+    conversions = [120, 100]  # challenger is worse — LESS is the correct direction
+
+    less = engine.run_synthesis(
+        ExperimentInput(
+            visitors=visitors,
+            conversions=conversions,
+            alternative=AlternativeHypothesis.LESS,
+        )
+    )[0]
+
+    two_sided = engine.run_synthesis(
+        ExperimentInput(
+            visitors=visitors,
+            conversions=conversions,
+            alternative=AlternativeHypothesis.TWO_SIDED,
+        )
+    )[0]
+
+    assert less.ci_diff[0] == float("-inf")
+    assert less.ci_diff[1] != float("inf")
+    assert less.p_value == pytest.approx(two_sided.p_value / 2)
+
+
+def test_run_ztest_zero_se_returns_one():
+    """Zero SE must return p_value=1.0 rather than divide-by-zero."""
+    p = FrequentistEngine.run_ztest(
+        diff=0.01, se_diff=0.0, alternative=AlternativeHypothesis.TWO_SIDED
+    )
+    assert p == 1.0
+
+
+def test_analytical_power_high_effect_near_one():
+    """A large effect relative to SE should yield power close to 1.0."""
+    power = FrequentistEngine.calculate_analytical_power(
+        diff=0.10,
+        se_diff=0.005,
+        alpha=0.05,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    assert power > 0.99
+
+
+def test_analytical_power_zero_se_returns_zero():
+    """Zero SE is an invalid input; power should be 0.0 rather than crash."""
+    power = FrequentistEngine.calculate_analytical_power(
+        diff=0.01,
+        se_diff=0.0,
+        alpha=0.05,
+        alternative=AlternativeHypothesis.TWO_SIDED,
+    )
+    assert power == 0.0
+
+
+def test_compute_non_inferiority_passing():
+    """Challenger within the NI margin should be declared non-inferior."""
+    result = compute_non_inferiority(
+        p_ctrl=0.10, p_chal=0.095, se_diff=0.005, margin=0.02, alpha=0.05
+    )
+    assert result["is_non_inferior"] is True
+    assert result["p_value"] < 0.05
+    assert "Non-inferiority established" in result["conclusion"]
+
+
+def test_compute_non_inferiority_failing():
+    """Challenger far below control should fail the NI test."""
+    result = compute_non_inferiority(
+        p_ctrl=0.10, p_chal=0.05, se_diff=0.005, margin=0.02, alpha=0.05
+    )
+    assert result["is_non_inferior"] is False
+    assert "Too Risky" in result["conclusion"]
+
+
+def test_compute_non_inferiority_invalid_margin():
+    """margin outside (0, 1) must raise ValueError."""
+    with pytest.raises(ValueError, match="proportion"):
+        compute_non_inferiority(
+            p_ctrl=0.10, p_chal=0.09, se_diff=0.005, margin=1.5, alpha=0.05
+        )
 
 
 def test_variance_reduction_factor_tightens_intervals(engine):
