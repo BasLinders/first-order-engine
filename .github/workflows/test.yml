@@ -92,9 +92,6 @@ jobs:
 
   # ── 3. Test ───────────────────────────────────────────────────────────────
   # Runs only after both autoformat and lint succeed (or autoformat is skipped).
-  # Integration tests require the gcp package to be importable; they are
-  # excluded here with -m "not integration" and should be run in a separate
-  # job that installs the full gcp module tree.
   test:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -126,14 +123,8 @@ jobs:
           pip install -e .[dev]
 
       - name: Run Unit Tests with Coverage
-        # --ignore=tests/integration/ prevents pytest from importing
-        # test_api_handlers.py at collection time. That file has module-level
-        # imports from gcp.functions.* not installed by pip install -e .[dev].
-        # pytest imports every collected file before applying -m marker filters,
-        # so -m "not integration" alone is insufficient — the ImportError fires
-        # during collection and aborts the entire run before any test executes.
         run: |
-          pytest tests/ --ignore=tests/integration/ \
+          pytest tests/ \
             --cov=foe \
             --cov-report=term-missing \
             --cov-fail-under=80

@@ -4,20 +4,6 @@ tests/conftest.py: shared pytest configuration for the FOE test suite.
 Fixtures defined here are available to every test file without importing.
 Local fixture definitions in individual test files shadow conftest fixtures
 of the same name, so adding this file does not break existing tests.
-
-Migration path (optional cleanup once conftest is in place)
------------------------------------------------------------
-test_frequentist.py:
-  - Remove @pytest.fixture def engine()
-  - Rename parameter `engine` -> `frequentist_engine` in all test signatures
-
-test_bayesian.py:
-  - Remove @pytest.fixture def engine()
-  - Remove @pytest.fixture def uninformative_priors()
-  - Remove @pytest.fixture def skeptical_priors()
-  - Remove def make_experiment()
-  - Rename parameter `engine` → `bayesian_engine` in all test signatures
-  - Add `make_experiment` to test function signatures that call it directly
 """
 
 import pytest
@@ -25,19 +11,6 @@ import pytest
 from foe.bayesian.operations import BayesianEngine, get_beta_prior, get_lift_prior
 from foe.frequentist.operations import FrequentistEngine
 from foe.core.models import ExperimentInput
-
-
-# ---------------------------------------------------------------------------
-# Marker registration
-# ---------------------------------------------------------------------------
-
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line(
-        "markers",
-        "integration: marks tests that require the gcp package and a deployed "
-        "Cloud Function environment. Excluded from the standard unit test run via "
-        "--ignore=tests/integration/. Run explicitly with: pytest -m integration",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +41,6 @@ def bayesian_engine() -> BayesianEngine:
 # ---------------------------------------------------------------------------
 # Prior fixtures
 # ---------------------------------------------------------------------------
-# Shared between Bayesian unit tests and any future module that needs priors.
-# Identical to the definitions in test_bayesian.py. Local definitions there
-# take precedence until removed.
 
 @pytest.fixture
 def uninformative_priors():
@@ -98,10 +68,6 @@ def skeptical_priors():
 #
 #   def test_foo(make_experiment):
 #       data = make_experiment([1000, 1000], [100, 120])
-#
-# The local make_experiment function in test_bayesian.py is not a fixture,
-# so it does not shadow this one; both coexist until the local function
-# is removed and `make_experiment` is added to individual test signatures.
 
 @pytest.fixture
 def make_experiment():
