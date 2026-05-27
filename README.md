@@ -1,13 +1,43 @@
 # First Order Engine
 
-**First Order Engine** is a high-fidelity statistical framework designed for end-to-end experimentation analysis. It moves beyond basic A/B testing by synthesizing multiple statistical methodologies: Bayesian, Frequentist, and Sequential - into a single, unified source of truth for agency-grade decision-making.
+**First Order Engine (FOE)** is a high-fidelity statistical framework designed for end-to-end experimentation analysis. It moves beyond basic A/B testing by synthesizing multiple statistical methodologies — Bayesian, Frequentist, and Sequential — into a single, unified source of truth for agency-grade decision-making.
+
+FOE is a **pure Python library**. It has no opinion about where your data comes from, where your results go, or what infrastructure you run it on. It is imported and called; everything else is someone else's job.
 
 ---
 
 ## The Anatomy of the Name
 
 * **First Order:** Refers to **First-Order Logic** and **First-Order Principles**. It signifies that the engine performs foundational, predicate-based reasoning on raw data, stripping away marketing noise to find the fundamental mathematical truth of an effect.
-* **Engine:** Built for **Stateless Automation and Scale**. A high-performance computational layer designed to replace fragile spreadsheets with rigorous, repeatable, and cloud-decoupled code.
+* **Engine:** Built for **Stateless Automation and Scale**. A high-performance computational layer designed to replace fragile spreadsheets with rigorous, repeatable, platform-agnostic code.
+
+---
+
+## Two-Repository Architecture
+
+FOE is one half of a two-repository system. The separation of concerns is deliberate:
+
+| Repository | Role |
+|---|---|
+| **`first-order-engine`** *(this repo)* | Pure Python library. Statistical computation only. No I/O, no infrastructure. |
+| [`first-order-pipeline`](https://github.com/BasLinders/first-order-pipeline) | ETL pipeline. Fetches data from BigQuery, imports FOE, runs the engines, pushes results to Airtable. |
+
+The pipeline repo installs FOE as a dependency (`pip install git+https://github.com/BasLinders/first-order-engine.git@main`) and calls it like any other Python package. FOE itself never knows or cares that BigQuery or Airtable exist.
+
+```mermaid
+graph LR
+    subgraph "first-order-pipeline"
+        BQ[(BigQuery)] -->|fetch_bigquery_data| T[Transform to ExperimentInput]
+        T --> FOE
+        FOE -->|statistical results| AT[Airtable]
+    end
+
+    subgraph "first-order-engine (this repo)"
+        FOE[foe.frequentist\nfoe.bayesian\nfoe.sequential\n...]
+    end
+```
+
+This design means FOE can be integrated into any other platform — a Django app, a Streamlit dashboard, a Jupyter notebook, a different cloud provider — simply by importing it. The pipeline is an illustrative, production-ready reference implementation of one such integration.
 
 ---
 
@@ -16,131 +46,124 @@
 ```text
 first-order-engine/
 │
-├── pyproject.toml
+├── pyproject.toml               # Build config, dependencies, pytest & coverage settings
 ├── README.md
-├── .flake8                      
+├── .flake8
 ├── .github/
 │   └── workflows/
-│       ├── test.yml
-│       └── deploy.yml
+│       └── test.yml             # Lint + unit tests across Python 3.10–3.13
 │
-├── foe/
+├── foe/                         # The importable package
 │   ├── __init__.py
 │   ├── core/
-│   │   ├── __init__.py      
-│   │   ├── models.py
-│   │   ├── validators.py
-│   │   └── priors.py            
+│   │   ├── models.py            # Pydantic input/output models (ExperimentInput, etc.)
+│   │   ├── validators.py        # Cross-field validation logic
+│   │   └── priors.py            # Informed Beta prior construction
 │   ├── frequentist/
-│   │   ├── __init__.py          
-│   │   ├── operations.py
-│   │   └── confidence.py
+│   │   ├── operations.py        # FrequentistEngine (z-test, Sidak, bootstrap power)
+│   │   └── confidence.py        # Non-inferiority testing
 │   ├── bayesian/
-│   │   ├── __init__.py             
-│   │   └── operations.py
+│   │   └── operations.py        # BayesianEngine (Beta-Binomial, lift prior, monetary projection)
 │   ├── sequential/
-│   │   └── __init__.py              
+│   │   └── operations.py        # SequentialEngine (LLR bounds, trajectory processing)
 │   ├── pretest/
-│   │   └── __init__.py
+│   │   ├── operations.py        # PretestEngine (sample size, MDE)
+│   │   └── forecasting.py       # Prophet-based traffic forecasting
 │   ├── srm/
-│   │   └── __init__.py
+│   │   └── operations.py        # SRMEngine (chi-squared traffic checks)
 │   ├── interaction/
-│   │   └── __init__.py
+│   │   └── operations.py        # InteractionEngine (OLS interaction modelling)
 │   ├── behavioral/
-│   │   └── __init__.py
+│   │   └── operations.py        # BehavioralEngine (funnel & segment analysis)
 │   ├── continuous/
-│   │   └── __init__.py
+│   │   └── operations.py        # ContinuousMetricEngine (revenue, CUPED)
 │   └── viz/
-│       └── __init__.py
-│
-├── gcp/
-│   ├── __init__.py                  
-│   └── functions/
-│       ├── __init__.py              
-│       ├── frequentist/
-│       │   ├── __init__.py          
-│       │   ├── main.py
-│       │   ├── requirements.txt     # (./foe-*.whl, flask)
-│       │   └── .gcloudignore        
-│       └── ...                      # identical structure per module
+│       └── operations.py        # VizEngine (JSON-ready chart coordinates)
 │
 └── tests/
-    ├── conftest.py                  # (shared fixtures, marker registration)
-    ├── unit/
-    │   ├── __init__.py              
-    │   ├── test_frequentist.py
-    │   └── test_bayesian.py
+    ├── conftest.py
+    ├── test_core.py             # priors, validators, models
+    ├── test_frequentist.py      # FrequentistEngine + confidence
+    ├── test_bayesian.py         # BayesianEngine (probability + monetary)
     └── integration/
-        ├── __init__.py              
         └── test_api_handlers.py
 ```
 
-## System Design
-```mermaid
-graph LR
-    subgraph "Data Layer"
-        BQ[(BigQuery)]
-        GCS[Cloud Storage]
-    end
+---
 
-    subgraph "Core Engine (Library)"
-        direction TB
-        Stats[Frequentist/Bayesian]
-        Seq[Sequential LLR]
-        Fore[Prophet Forecasting]
-        Checks[SRM/Interactions]
-    end
+## Quick Start
 
-    subgraph "Execution Layer (GCP)"
-        CR[Cloud Run - API]
-        CF[Cloud Functions - Triggers]
-        BQ_RF[BQ Remote Functions]
-    end
+```python
+from foe.core.models import ExperimentInput
+from foe.frequentist.operations import FrequentistEngine
+from foe.bayesian.operations import BayesianEngine, get_beta_prior, get_lift_prior
 
-    BQ & GCS --> CR
-    Stats & Seq & Fore & Checks --> CR & CF & BQ_RF
+# --- Frequentist ---
+data = ExperimentInput(
+    visitors=[2000, 2000],
+    conversions=[200, 260],
+    labels=["Control", "Challenger"],
+)
+
+freq_results = FrequentistEngine().run_synthesis(data)
+for r in freq_results:
+    print(r.conclusion)
+
+# --- Bayesian ---
+bayes_results = BayesianEngine().run_probability_analysis(
+    data=data,
+    beta_prior=get_beta_prior(),
+    lift_prior=get_lift_prior(0.0, "uninformative"),
+)
+for r in bayes_results:
+    print(f"{r.variant_label}: {r.prob_being_best:.1%} probability of being best")
 ```
+
+**Installation:**
+```bash
+pip install git+https://github.com/BasLinders/first-order-engine.git@main
+```
+
+---
 
 ## Core Algorithmic Pillars
 
-The engine utilizes seven distinct layers of analysis to eliminate bias and maximize sensitivity:
-
 ### 1. Hybrid Inference (Bayesian & Frequentist)
-FOE calculates both traditional **P-values** for significance thresholds and **Bayesian Posterior Probabilities** to provide intuitive "Probability of Being Best" metrics for stakeholders.
+FOE calculates both traditional **p-values** for significance thresholds and **Bayesian Posterior Probabilities** to provide intuitive "Probability of Being Best" metrics for stakeholders.
 
 ### 2. "Always Valid" Sequential Analysis
-Unlike traditional alpha-spending models, FOE employs an **Always Valid** sequential method. By utilizing **Log-Likelihood Ratios (LLR)** and dynamic upper/lower bounds based on $\alpha$ and $\beta$, the engine allows for continuous monitoring and "early exit" functionality without inflating Type I error or requiring a fixed sample size.
+Unlike traditional alpha-spending models, FOE employs an **Always Valid** sequential method. By utilizing **Log-Likelihood Ratios (LLR)** and dynamic upper/lower bounds based on $\alpha$ and $\beta$, the engine allows for continuous monitoring and early-exit functionality without inflating Type I error or requiring a fixed sample size.
 
 ### 3. Automated SRM Detection
-Sample Ratio Mismatch (SRM) is the "silent killer" of experiments. The engine continuously monitors traffic distributions using Chi-Squared goodness-of-fit tests to flag data quality issues in real-time.
+Sample Ratio Mismatch (SRM) is the "silent killer" of experiments. The engine monitors traffic distributions using Chi-Squared goodness-of-fit tests to flag data quality issues before they corrupt results.
 
 ### 4. Interaction & Interference Analysis
-FOE identifies how Test 1 affects Test $N$. It quantifies interaction effects in overlapping segments, ensuring that "hidden" correlations don't lead to false conclusions in complex testing environments.
+FOE identifies how Test 1 affects Test $N$. It quantifies interaction effects in overlapping segments, ensuring that hidden correlations don't lead to false conclusions in complex testing environments.
 
 ### 5. Automated Decision Trees
-Not all data is Normal. The engine automatically evaluates data distribution (Normality/Variance) to choose the mathematically correct test—dynamically switching between **ANOVA**, **Welch's**, and **Non-Parametric** (Mann-Whitney/Kruskal-Wallis) models.
+Not all data is Normal. The engine automatically evaluates data distribution (normality, variance) to choose the mathematically correct test — dynamically switching between **ANOVA**, **Welch's**, and **Non-Parametric** (Mann-Whitney / Kruskal-Wallis) models.
 
 ### 6. Advanced Test Planning
-Integrated duration calculators ensure every experiment is sized correctly for the expected MDE (Minimum Detectable Effect).
+Integrated duration calculators ensure every experiment is sized correctly for the expected MDE (Minimum Detectable Effect), with analytical and bootstrap-based power estimates.
 
 ### 7. Strategic Synthesis
-The engine doesn't just output raw tensors; it performs a final Synthesis. By balancing Frequentist certainty and Bayesian risk, FOE generates a **Natural Language Verdict**. It translates complex stats into definitive business actions: Winner Declared, Loss Averted, or Continue Testing.
+The engine doesn't just output raw numbers — it performs a final Synthesis. By balancing Frequentist certainty and Bayesian risk, FOE generates a **natural language verdict** that translates complex statistics into a definitive business action: Winner Declared, Loss Averted, or Continue Testing.
 
 ---
 
 ## Technical Overview
 
-The engine is designed to be integrated into modern data stacks.
-
 * **Sequential Logic:** LLR-based bounds derived from $\alpha$ (Type I error) and $\beta$ (Type II error), ensuring validity at any sample size ($n$).
-* **Safeguards:** Built-in protection against Simpson’s Paradox, Outlier Variance, and False Discovery Rates (FDR).
-* **Goal:** To transform raw experimental data into a "Synthesis": a hardened, strategic business truth.
+* **Multiple Comparisons:** Šidák correction applied automatically when more than two variants are present.
+* **Monetary Projection:** Beta-Binomial posterior combined with log-normal AOV sampling to produce expected uplift, risk, and net contribution over a configurable projection horizon.
+* **Safeguards:** Built-in protection against Simpson's Paradox, outlier variance, and False Discovery Rates (FDR).
 
 ---
 
 ## Why First Order Engine?
 
-Standard tools tell you **what** happened. The **First Order Engine** tells you **why** it happened, how much it is actually worth in the long run, and, most importantly, whether the result is mathematically bulletproof regardless of when you stopped the test.
+Standard tools tell you **what** happened. The **First Order Engine** tells you **why** it happened, how much it is actually worth in the long run, and — most importantly — whether the result is mathematically bulletproof regardless of when you stopped the test.
 
 ---
+
 *Developed for high-stakes experimentation and strategic growth analysis.*
