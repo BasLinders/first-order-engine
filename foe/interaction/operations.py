@@ -1,8 +1,9 @@
 import re
+import warnings as _warnings
 import pandas as pd
 import statsmodels.api as sm
 import patsy
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Tuple
 
 # Pre-compiled regex for parsing statsmodels coefficient names like:
 # "C(test1)[T.VariantB]"  →  group(1)="test1", group(2)="VariantB"
@@ -51,6 +52,39 @@ class InteractionEngine:
             )
 
     @staticmethod
+    def check_data_quality(df: pd.DataFrame, test_cols: List[str]) -> List[str]:
+        """
+        Returns soft warnings (not errors) about data conditions likely to
+        cause perfect separation in the GLM. Intended to be surfaced to the
+        caller before fitting so the root cause of any separation warnings
+        is clear.
+        """
+        messages: List[str] = []
+
+        def _combo_label(row: pd.Series) -> str:
+            return " / ".join(f"{col}={row[col]}" for col in test_cols)
+
+        zero_rate_rows = df[df["conversions"] == 0]
+        full_rate_rows = df[df["conversions"] == df["visitors"]]
+
+        if not zero_rate_rows.empty:
+            combos = zero_rate_rows.apply(_combo_label, axis=1).tolist()
+            messages.append(
+                f"The following segment(s) have a 0% conversion rate, which can cause "
+                f"perfect separation — coefficient estimates may be unreliable: "
+                f"{', '.join(combos)}."
+            )
+        if not full_rate_rows.empty:
+            combos = full_rate_rows.apply(_combo_label, axis=1).tolist()
+            messages.append(
+                f"The following segment(s) have a 100% conversion rate, which can cause "
+                f"perfect separation — coefficient estimates may be unreliable: "
+                f"{', '.join(combos)}."
+            )
+
+        return messages
+
+    @staticmethod
     def prepare_aggregated_format(
         input_df: pd.DataFrame, test_cols: List[str]
     ) -> pd.DataFrame:
@@ -62,12 +96,22 @@ class InteractionEngine:
         return df
 
     def run_interaction_analysis(
-        self, df: pd.DataFrame, test_cols: List[str]
-    ) -> List[Dict[str, Any]]:
+        self, df: pd.DataFrame, test_cols: List[str], alpha: float = 0.05
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         Orchestrates preparation, model fitting, and JSON-safe extraction.
         Builds the design matrix safely using patsy to avoid formula parser bugs.
+
+        Returns
+        -------
+        results : list[dict]
+            One entry per model term, with JSON-serializable fields.
+        fit_warnings : list[str]
+            Human-readable messages for any PerfectSeparationWarning or
+            numerical RuntimeWarning raised during fitting.
         """
+        from statsmodels.genmod.generalized_linear_model import PerfectSeparationWarning
+
         self._validate_inputs(df, test_cols)
         processed_df = self.prepare_aggregated_format(df, test_cols)
 
@@ -81,20 +125,49 @@ class InteractionEngine:
         )
 
         try:
-            model = sm.GLM(
-                endog=endog,
-                exog=exog,
-                family=sm.families.Binomial(),
-            ).fit()
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                model = sm.GLM(
+                    endog=endog,
+                    exog=exog,
+                    family=sm.families.Binomial(),
+                ).fit()
         except Exception as e:
             raise ValueError(f"Interaction model fitting failed: {e}") from e
 
-        # 3. Extract and parse results into JSON format
-        return self._format_summary_table(model)
+        # Translate captured warnings into readable strings and deduplicate.
+        # statsmodels tends to emit each warning twice (once per IRLS pass).
+        seen: set = set()
+        fit_warnings: List[str] = []
+        for w in caught:
+            if issubclass(w.category, PerfectSeparationWarning):
+                msg = (
+                    "Perfect separation detected — one or more variant combinations "
+                    "may have a 0% or 100% conversion rate. Affected coefficient "
+                    "estimates and p-values should be treated with caution."
+                )
+            elif issubclass(w.category, RuntimeWarning) and "divide by zero" in str(w.message):
+                msg = (
+                    "Numerical instability during fitting (divide by zero in scale "
+                    "calculation). This is typically a secondary symptom of perfect "
+                    "separation — see the data quality warning above."
+                )
+            else:
+                continue
+            if msg not in seen:
+                seen.add(msg)
+                fit_warnings.append(msg)
 
-    def _format_summary_table(self, model) -> List[Dict[str, Any]]:
+        # 3. Extract and parse results into JSON format
+        return self._format_summary_table(model, alpha=alpha), fit_warnings
+
+    def _format_summary_table(
+        self, model, alpha: float
+    ) -> List[Dict[str, Any]]:
         """
         Parses the raw statsmodels summary into a JSON-ready list of dicts.
+        Uses the caller-supplied alpha for both is_significant and conclusion
+        so the two fields are always consistent.
         """
         summary_df = model.summary2().tables[1].copy()
         results = []
@@ -103,13 +176,14 @@ class InteractionEngine:
             clean_name = self._rename_coefficient(str(raw_name))
             coef = float(row["Coef."])
             p_val = float(row["P>|z|"])
+            is_significant = bool(p_val < alpha)
 
             # Skip the intercept/baseline conclusion as it represents the raw control state
             conclusion = (
                 "Baseline Group"
                 if clean_name == "Baseline (Control Group)"
                 else self.generate_interaction_conclusion(
-                    term_label=clean_name, coef=coef, p_value=p_val
+                    term_label=clean_name, coef=coef, p_value=p_val, alpha=alpha
                 )
             )
 
@@ -121,8 +195,8 @@ class InteractionEngine:
                     "std_err": float(row["Std.Err."]),
                     "z_score": float(row["z"]),
                     "p_value": p_val,
-                    "is_significant": bool(p_val < 0.05),
-                    "conclusion": conclusion
+                    "is_significant": is_significant,
+                    "conclusion": conclusion,
                 }
             )
 
@@ -149,8 +223,8 @@ class InteractionEngine:
         if df["conversions"].lt(0).any():
             raise ValueError("'conversions' column contains negative values.")
 
-        if df["visitors"].lt(0).any():
-            raise ValueError("'visitors' column contains negative values.")
+        if df["visitors"].le(0).any():
+            raise ValueError("'visitors' column contains zero or negative values.")
 
         if (df["conversions"] > df["visitors"]).any():
             raise ValueError(
