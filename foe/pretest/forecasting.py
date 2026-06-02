@@ -64,9 +64,9 @@ class ForecastingEngine:
         for col in ["visitors", "conversions"]:
             # Suppressing daily seasonality as A/B test data is usually aggregated by day, not by hour
             m = Prophet(
-                yearly_seasonality=True,
-                weekly_seasonality=True,
-                daily_seasonality=False,
+                yearly_seasonality=True, # type: ignore[arg-type]
+                weekly_seasonality=True, # type: ignore[arg-type]
+                daily_seasonality=False, # type: ignore[arg-type]
                 interval_width=interval
             )
 
@@ -96,8 +96,8 @@ class ForecastingEngine:
                 final[c] = final[c].clip(lower=0)
 
         # Calculate totals for the conclusion string
-        total_vis = final["yhat_vis"].sum()
-        total_conv = final["yhat_conv"].sum()
+        total_vis = float(final["yhat_vis"].sum())
+        total_conv = float(final["yhat_conv"].sum())
 
         # JSON Serialization Fix: Convert datetime to string format (YYYY-MM-DD)
         final["ds"] = final["ds"].dt.strftime("%Y-%m-%d")
