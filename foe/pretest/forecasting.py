@@ -64,9 +64,9 @@ class ForecastingEngine:
         for col in ["visitors", "conversions"]:
             # Suppressing daily seasonality as A/B test data is usually aggregated by day, not by hour
             m = Prophet(
-                yearly_seasonality=True, # type: ignore[arg-type]
-                weekly_seasonality=True, # type: ignore[arg-type]
-                daily_seasonality=False, # type: ignore[arg-type]
+                yearly_seasonality=True,  # type: ignore[arg-type]
+                weekly_seasonality=True,  # type: ignore[arg-type]
+                daily_seasonality=False,  # type: ignore[arg-type]
                 interval_width=interval
             )
 

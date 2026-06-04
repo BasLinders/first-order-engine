@@ -29,7 +29,7 @@ class GSDEngine:
         """
         # Clamp t to ensure safe bounds [0.0, 1.0]
         t = max(0.0, min(1.0, t))
-        
+
         if t == 0:
             return 0.0
         if t == 1:
@@ -39,11 +39,11 @@ class GSDEngine:
             z_alpha = stats.norm.ppf(1 - alpha / 2)
             # 2 * (1 - Phi(Z_{1-alpha/2} / sqrt(t)))
             return 2 * (1 - stats.norm.cdf(z_alpha / np.sqrt(t)))
-            
+
         elif method == GSDSpendingMethod.POCOCK:
             # alpha * ln(1 + (e - 1) * t)
             return alpha * np.log(1 + (np.e - 1) * t)
-        
+
         raise ValueError(f"Unsupported GSD spending method: {method}")
 
     @staticmethod
@@ -60,7 +60,7 @@ class GSDEngine:
         """
         with np.errstate(divide="ignore", invalid="ignore"):
             p_var = x_var / np.maximum(n_var, 1)
-            
+
             if fixed_baseline_cr is not None:
                 # ONE-SAMPLE LOGIC
                 p_base = fixed_baseline_cr
@@ -70,15 +70,15 @@ class GSDEngine:
                 # MULTI-SAMPLE LOGIC
                 if n_ctrl is None or x_ctrl is None:
                     raise ValueError("Multi-sample test requires Control arrays.")
-                    
+
                 p_ctrl = x_ctrl / np.maximum(n_ctrl, 1)
                 p_pool = (x_var + x_ctrl) / np.maximum(n_var + n_ctrl, 1)
-                
+
                 se = np.sqrt(
                     p_pool * (1 - p_pool) * (1.0 / np.maximum(n_var, 1) + 1.0 / np.maximum(n_ctrl, 1))
                 )
                 z_score = (p_var - p_ctrl) / se
-                
+
         return np.where(np.isnan(z_score) | np.isinf(z_score), 0.0, z_score)
 
     def process_test_trajectory(
@@ -94,14 +94,14 @@ class GSDEngine:
         """
         Orchestrates Group Sequential Design (GSD) evaluation across a DataFrame.
         Evaluates discrete looks based on the information fraction (t).
-        
+
         Note: `max_visitors` is strictly required for GSD to calculate the horizon.
         """
         if df.empty or max_visitors <= 0:
             return pd.DataFrame()
 
         results = []
-        
+
         # Defend against duplicate dates and sort
         df = df.groupby(["variant_name", "measurement_date"]).last().reset_index()
         variants_to_test = [v for v in df["variant_name"].unique() if v != control_group_name]
@@ -128,12 +128,12 @@ class GSDEngine:
                     n_ctrl=merged["visitors_ctrl"].values,
                     x_ctrl=merged["conversions_ctrl"].values
                 )
-                
+
                 # Calculate spent alpha for each look
                 merged["alpha_spent"] = merged["info_fraction_t"].apply(
                     lambda t: self.lan_demets_alpha_spent(alpha, t, spending_method)
                 )
-                
+
                 # Marginal boundary approximation for UI visualization
                 merged["marginal_z_bound"] = merged["alpha_spent"].apply(
                     lambda a: stats.norm.ppf(1 - a / 2) if a > 0 else np.inf
@@ -145,7 +145,7 @@ class GSDEngine:
                     "significant",
                     np.where(total_current_visitors >= max_visitors, "cap_reached", "continue")
                 )
-                
+
                 results.append(merged)
 
         elif test_type == TestType.ONE_SAMPLE:

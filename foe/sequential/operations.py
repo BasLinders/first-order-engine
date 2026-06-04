@@ -3,10 +3,12 @@ import pandas as pd
 from typing import Tuple, Dict, Optional, Union
 from enum import Enum
 
+
 # Inherit from str to ensure clean JSON serialization over APIs
 class TestType(str, Enum):
     ONE_SAMPLE = "one_sample"
     MULTI_SAMPLE = "multi_sample"
+
 
 class SequentialEngine:
     """
@@ -121,7 +123,7 @@ class SequentialEngine:
                 valid_mask = (n_ctrl > 0) & (n_var > 0)
                 p_ctrl = x_ctrl / np.maximum(n_ctrl, 1)
                 p_var = x_var / np.maximum(n_var, 1)
-                
+
                 n_total = np.maximum(n_ctrl + n_var, 1)
                 p_pool = (x_ctrl + x_var) / n_total
                 variance = (
@@ -145,9 +147,9 @@ class SequentialEngine:
     def estimate_remaining_time(
         current_llr: float, upper_bound: float, total_visitors: int, days_elapsed: int
     ) -> Dict[str, Union[float, int]]:
-        
+
         """Predicts the required sample size and days to reach significance based on linear velocity."""
-        
+
         if current_llr <= 0 or days_elapsed <= 0:
             return {"est_visitors_needed": np.inf, "est_days_needed": np.inf}
 
@@ -187,7 +189,7 @@ class SequentialEngine:
                 base
             )
         return base
-        
+
     def process_test_trajectory(
         self,
         df: pd.DataFrame,
@@ -212,10 +214,10 @@ class SequentialEngine:
 
         results = []
         upper, lower = self.calculate_boundaries(alpha, beta, num_variants)
-        
+
         # Defend against duplicate dates and sort
         df = df.groupby(["variant_name", "measurement_date"]).last().reset_index()
-        
+
         variants_to_test = [
             v for v in df["variant_name"].unique() if v != control_group_name
         ]
@@ -228,7 +230,7 @@ class SequentialEngine:
             ctrl_df = df[df["variant_name"] == control_group_name].set_index(
                 "measurement_date"
             )
-            
+
             for variant in variants_to_test:
                 var_df = df[df["variant_name"] == variant].set_index("measurement_date")
 
@@ -255,14 +257,14 @@ class SequentialEngine:
                 merged['status'] = self._assign_status(merged, upper, lower, 'visitors_var', max_visitors)
 
                 results.append(merged)
-                
+
         elif test_type == TestType.ONE_SAMPLE:
             if baseline_cr is None:
                 raise ValueError("baseline_cr must be provided for One-Sample tests.")
 
             for variant in variants_to_test:
                 merged = df[df["variant_name"] == variant].copy()
-                
+
                 merged["llr"] = self.calculate_llr_vectorized(
                     n_var=merged["visitors"].values,
                     x_var=merged["conversions"].values,
