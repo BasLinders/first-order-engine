@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import norm
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
 from foe.frequentist.confidence import compute_interval_difference
@@ -27,9 +27,9 @@ _PRIOR_PRESETS: Dict[str, float] = {
 
 class FrequentistEngine:
     """
-    Axiom Frequentist Engine: Implements Variance Reduction (CUPED/Lin/Aggregate),
-    Robust OLS Inference, High-Performance Bootstrapping, and Bayesian decision-risk
-    (false-positive / false-negative) reporting.
+    Axiom Frequentist Engine: Variance Reduction (CUPED/Lin/Aggregate),
+    Robust OLS Inference, High-Performance Bootstrapping, and Bayesian
+    decision-risk (false-positive / false-negative) reporting.
     Stateless design optimized for Cloud Functions.
     """
 
@@ -47,10 +47,9 @@ class FrequentistEngine:
         """
         Generates a UI-agnostic summary of the results in English.
 
-        When `false_positive_risk` is provided, the wording is calibrated to that
-        risk instead of asserting unconditional confidence. When it is omitted
-        (None) the original wording is preserved verbatim for backward
-        compatibility.
+        When `false_positive_risk` is omitted (None) the original wording is
+        preserved verbatim. When supplied, the wording is calibrated to that
+        risk instead of asserting unconditional confidence.
         """
         if not is_significant:
             return (
@@ -80,25 +79,25 @@ class FrequentistEngine:
                 f"Significant Positive Impact: '{variant_name}' shows an observed "
                 f"relative impact of {relative_lift:+.2%}."
             )
-            action = (
+            tail = (
                 f" The false-positive risk is {false_positive_risk:.0%} given your prior — "
                 "treat this as provisional and consider replication before a full rollout."
                 if provisional
                 else f" The false-positive risk is low ({false_positive_risk:.0%}); rolling this out is well supported."
             )
-            return base + action
+            return base + tail
 
         base = (
             f"Significant Negative Impact: '{variant_name}' is performing worse than control "
             f"with an observed relative impact of {relative_lift:+.2%}."
         )
-        action = (
+        tail = (
             f" The false-positive risk is {false_positive_risk:.0%} given your prior — "
             "confirm before discarding."
             if provisional
             else f" The false-positive risk is low ({false_positive_risk:.0%}); discarding this variant is well supported."
         )
-        return base + action
+        return base + tail
 
     # ------------------------------------------------------------------ #
     #  Variance reduction: user-level (CUPED / Lin)
@@ -113,8 +112,7 @@ class FrequentistEngine:
         Formula: Y_cuped = Y - theta * (X_pre - mean(X_pre))
 
         Requires user-level data with a pre-experiment covariate column.
-        The adjusted column is written back to the DataFrame as
-        '{target_kpi}_cuped' for use in downstream analysis.
+        The adjusted column is written back as '{target_kpi}_cuped'.
         """
         cov = df[[target_kpi, pre_period_kpi]].cov().iloc[0, 1]
         var_pre = df[pre_period_kpi].var()
@@ -137,19 +135,14 @@ class FrequentistEngine:
     ) -> List[Dict[str, Any]]:
         """
         Lin's Adjustment (2013). More robust than CUPED for heterogeneous effects.
-        Regression: Y ~ Treatment * (Covariate - mean(Covariate))
-
-        Requires user-level data. Uses HC3 robust standard errors.
+        Regression: Y ~ Treatment * (Covariate - mean(Covariate)). HC3 robust SEs.
 
         Args:
-            df:              User-level DataFrame containing target_kpi,
-                             pre_period_kpi, and variant_col columns.
-            target_kpi:      Name of the outcome column (e.g. 'converted').
-            pre_period_kpi:  Name of the pre-experiment covariate column.
-            variant_col:     Name of the variant assignment column.
-            alpha:           Significance threshold. Should match the
-                             confidence_level used in ExperimentInput
-                             (i.e. alpha = 1 - confidence_level).
+            df:              User-level DataFrame.
+            target_kpi:      Outcome column (e.g. 'converted').
+            pre_period_kpi:  Pre-experiment covariate column.
+            variant_col:     Variant assignment column.
+            alpha:           Significance threshold (alpha = 1 - confidence_level).
         """
         df = df.copy()
         df["cov_centered"] = df[pre_period_kpi] - df[pre_period_kpi].mean()
@@ -167,7 +160,7 @@ class FrequentistEngine:
             )
 
             p_val = model.pvalues[term]
-            ate = model.params[term]  # Average Treatment Effect
+            ate = model.params[term]
             control_mean = model.params["Intercept"]
 
             results.append(
@@ -200,53 +193,36 @@ class FrequentistEngine:
         phi_upper: float = 5.0,
     ) -> Dict[str, Any]:
         """
-        Estimates a variance scaling factor (φ) from aggregate historical
-        daily data, without requiring user-level observations.
+        Estimates a variance scaling factor (φ) from aggregate historical daily
+        data, without user-level observations.
 
-        Compares the observed day-to-day variance of the conversion rate
-        against what pure binomial sampling would predict for the same traffic
-        volumes. The ratio φ = observed / expected scales standard errors in
-        run_synthesis via ExperimentInput.reduction_factor.
+        Compares the observed day-to-day variance of the conversion rate against
+        what pure binomial sampling would predict for the same traffic volumes.
+        The ratio φ = observed / expected scales standard errors in run_synthesis
+        via ExperimentInput.reduction_factor (φ scales variance, so SE ∝ √φ).
 
             φ < 1  -> rate more stable than binomial theory predicts; SE shrinks.
             φ ≈ 1  -> rate behaves as binomial; no meaningful adjustment.
             φ > 1  -> overdispersion (campaign bursts, seasonality); SE inflates.
 
-        Both variances are visitor-weighted so low-traffic days don't distort
-        the estimate. Two refinements over a naive ratio (parity with the UI
-        tool's corrected estimator):
+        Both variances are visitor-weighted so low-traffic days don't distort the
+        estimate. Two refinements over a naive ratio (parity with the corrected
+        UI estimator):
 
-        1. Degrees-of-freedom correction. The centring baseline is estimated
-           from the same rows whose residuals we measure, which biases the
-           observed variance DOWNWARD (the anti-conservative direction). We
-           divide by the residual dof using Kish's effective sample size
-           n_eff = 1 / Σ wᵢ², so φ → 1 under a true binomial null even on
-           short windows. (Reduces to n/(n-k) when weights are equal.)
+        1. Degrees-of-freedom correction. The centring baseline is estimated from
+           the same rows whose residuals we measure, biasing the observed variance
+           DOWNWARD (the anti-conservative direction). We divide by the residual
+           dof using Kish's effective sample size n_eff = 1 / Σ wᵢ², so φ → 1 under
+           a true binomial null even on short windows. (Reduces to n/(n-k) for
+           equal weights.)
 
-        2. Optional day-of-week control. If `date_col` is supplied, the
-           centring baseline is the per-weekday rate rather than a single
-           global mean, so recurring weekly seasonality is not mistaken for
-           overdispersion. Without it, weekly patterns inflate φ.
+        2. Optional day-of-week control. If `date_col` is supplied, the centring
+           baseline is the per-weekday rate rather than a single global mean, so
+           recurring weekly seasonality is not mistaken for overdispersion.
 
-        Args:
-            df:              Daily aggregate DataFrame.
-            visitors_col:    Column name for daily visitor counts.
-            conversions_col: Column name for daily conversion counts.
-            min_periods:     Minimum rows required; raises ValueError if unmet.
-            date_col:        Optional date column enabling day-of-week control.
-            phi_upper:       Upper clip on φ. Inflation fails safe, but a single
-                             corrupt day (tracking gap) can spike φ without
-                             bound, so it is capped and flagged.
-
-        Returns:
-            Dict with keys:
-                reduction_factor float  Clipped φ; pass to ExperimentInput.reduction_factor.
-                phi              float  Raw (unclipped) dispersion ratio.
-                regime           str    'stable' | 'neutral' | 'noisy' | 'high_noise'
-                n_periods        int    Rows used.
-                n_effective      float  Kish effective sample size.
-                dow_controlled   bool   Whether day-of-week control was applied.
-                clipped          bool   Whether φ hit a clip bound.
+        Returns a dict: reduction_factor (clipped φ), phi (raw), regime
+        ('stable'|'neutral'|'noisy'|'high_noise'), n_periods, n_effective,
+        dow_controlled, clipped.
         """
         n_periods = len(df)
         if n_periods < min_periods:
@@ -276,10 +252,9 @@ class FrequentistEngine:
         if date_col is not None:
             dow = pd.to_datetime(df[date_col]).dt.dayofweek.to_numpy()
             grp = pd.DataFrame({"dow": dow, "v": visitors, "c": conversions})
-            baseline = grp.groupby("dow").apply(
-                lambda g: g["c"].sum() / g["v"].sum(), include_groups=False
-            )
-            expected = baseline.reindex(dow).to_numpy()
+            agg = grp.groupby("dow").agg(v=("v", "sum"), c=("c", "sum"))
+            agg["base"] = agg["c"] / agg["v"]
+            expected = agg["base"].reindex(dow).to_numpy()
             n_params = int(np.unique(dow).size)
             dow_controlled = True
         else:
@@ -354,7 +329,7 @@ class FrequentistEngine:
     def calculate_analytical_power(
         diff: float, se_diff: float, alpha: float, alternative: AlternativeHypothesis
     ) -> float:
-        """Closed-form power calculation at the observed effect size."""
+        """Closed-form power at the observed effect size."""
         if se_diff == 0:
             return 0.0
 
@@ -376,15 +351,14 @@ class FrequentistEngine:
         use_pooled_se: bool = True,
     ) -> float:
         """
-        Calculates observed power via high-performance vectorized bootstrapping.
-        Optimized for Cloud Environments: Uses the Binomial distribution to avoid
-        massive memory allocations (OOM errors) when N is very large.
+        Observed power via high-performance vectorized bootstrapping.
+        Simulates conversion COUNTS via the Binomial distribution to avoid OOM
+        when N is large.
 
-        Note: this routine does NOT apply a reduction_factor. When overdispersion
-        is active, prefer `calculate_analytical_power`, which shares the unpooled,
-        φ-scaled SE used by `run_synthesis`. The `use_pooled_se` flag exists so the
-        power test can be aligned with that unpooled SE if exact consistency with
-        the reported p-value is required (default True preserves prior behavior).
+        Note: this routine does not apply a reduction_factor; under overdispersion
+        prefer `calculate_analytical_power`, which shares the φ-scaled unpooled SE
+        used by `run_synthesis`. `use_pooled_se=False` aligns the bootstrap test
+        statistic with that unpooled SE (default True preserves prior behavior).
         """
         if ctrl_n == 0 or chal_n == 0:
             return 0.0
@@ -392,7 +366,6 @@ class FrequentistEngine:
         ctrl_p = ctrl_conv / ctrl_n
         chal_p = chal_conv / chal_n
 
-        # Simulate conversion COUNTS directly using the Binomial distribution.
         sim_ctrl_convs = np.random.binomial(n=ctrl_n, p=ctrl_p, size=n_bootstraps)
         sim_chal_convs = np.random.binomial(n=chal_n, p=chal_p, size=n_bootstraps)
 
@@ -425,6 +398,12 @@ class FrequentistEngine:
 
     # ------------------------------------------------------------------ #
     #  Decision risk: false-positive / false-negative
+    #
+    #  Composable helpers. Deliberately NOT wired into run_synthesis: the
+    #  FrequentistResult contract (see test_frequentist.py) carries inference
+    #  fields only. Call these from a reporting layer, or extend the model with
+    #  observed_power / decision_risk_* and populate them in run_synthesis if you
+    #  want them on every result.
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -433,8 +412,8 @@ class FrequentistEngine:
         custom_prior: Optional[float] = None,
     ) -> float:
         """
-        Resolves a prior P(H1) — the probability that a real effect exists,
-        before seeing the data — from a named preset or an explicit value.
+        Resolves a prior P(H1) — probability a real effect exists, before data —
+        from a named preset or an explicit value.
 
         Presets: skeptical=0.10, neutral=0.50, optimistic=0.90. With
         sensitivity_mode='custom', `custom_prior` (in [0, 1]) is used directly.
@@ -461,13 +440,12 @@ class FrequentistEngine:
         alpha: float, power: float, prior: float
     ) -> float:
         """
-        P(H0 | significant) — the probability that a significant result is a
-        false positive, by Bayes' rule:
+        P(H0 | significant) — probability a significant result is a false
+        positive, by Bayes' rule:
 
             FPR = α·P(H0) / [ α·P(H0) + power·P(H1) ]
 
-        where P(H1) = prior, P(H0) = 1 - prior. Unlike a p-value, this answers
-        "given that I called a winner, how likely is there no real effect?"
+        with P(H1) = prior, P(H0) = 1 - prior.
         """
         p1, p0 = prior, 1.0 - prior
         denominator = (alpha * p0) + (power * p1)
@@ -478,13 +456,13 @@ class FrequentistEngine:
         alpha: float, power: float, prior: float
     ) -> float:
         """
-        P(H1 | not significant) — the probability that a non-significant result
-        missed a real effect, by Bayes' rule:
+        P(H1 | not significant) — probability a non-significant result missed a
+        real effect, by Bayes' rule:
 
             FNDR = β·P(H1) / [ β·P(H1) + (1-α)·P(H0) ]
 
-        where β = 1 - power. High FNDR on a flat result means the test was
-        likely underpowered rather than the variant being truly inert.
+        with β = 1 - power. High FNDR on a flat result means underpowered, not
+        necessarily inert.
         """
         p1, p0 = prior, 1.0 - prior
         beta = 1.0 - power
@@ -502,11 +480,11 @@ class FrequentistEngine:
     ) -> Dict[str, Any]:
         """
         Selects and computes the relevant decision-risk metric:
-          - significant result   -> false-positive risk (FPR)
-          - non-significant result-> false-negative discovery rate (FNDR)
+          - significant result      -> false-positive risk (FPR)
+          - non-significant result  -> false-negative discovery rate (FNDR)
 
-        The numeric metric is identical across tails; only the human-readable
-        label changes to reflect direction (improvement vs harm vs either).
+        The numeric value is identical across tails; only the label changes to
+        reflect direction.
         """
         if is_significant:
             value = cls.calculate_false_positive_risk(alpha, power, prior)
@@ -542,42 +520,21 @@ class FrequentistEngine:
 
     def run_synthesis(self, data: ExperimentInput) -> List[FrequentistResult]:
         """
-        High-level entry point: takes a validated ExperimentInput and returns
-        a FrequentistResult for each challenger vs control.
+        High-level entry point: takes a validated ExperimentInput and returns a
+        FrequentistResult per challenger vs control.
 
-        If a reduction_factor (φ) has been set on ExperimentInput — from
-        calculate_aggregate_variance_factor, apply_cuped, or elsewhere — it is
-        applied to the variance before the square root, the correct way to scale
-        a standard error:
+        If a reduction_factor (φ) is set on ExperimentInput — from
+        calculate_aggregate_variance_factor, apply_cuped, or elsewhere — it scales
+        the variance before the square root:
 
             SE = sqrt(phi * p*(1-p) / n)
 
         so SE is multiplied by sqrt(phi), not phi directly.
-
-        Each result also carries a decision-risk metric (false-positive risk for
-        significant results, false-negative discovery rate otherwise), derived
-        from the analytical power at the same Šidák alpha used for significance.
-        The prior P(H1) is read from ExperimentInput when available and otherwise
-        defaults to neutral (0.5).
-
-        NOTE: this assumes FrequentistResult declares three fields:
-            observed_power: float
-            decision_risk_metric: str
-            decision_risk_value: float
-        If your schema differs, adjust the constructor call below to match.
         """
         labels = data.labels or [f"Variant {i}" for i in range(len(data.visitors))]
         p_ctrl = data.conversions[0] / data.visitors[0]
         n_ctrl = data.visitors[0]
         alpha = apply_sidak(1.0 - data.confidence_level, len(data.visitors))
-
-        # Prior source is optional on ExperimentInput; degrade gracefully.
-        prior = getattr(data, "prior_h1", None)
-        if prior is None:
-            prior = self.resolve_prior_probability(
-                getattr(data, "sensitivity_mode", "neutral"),
-                getattr(data, "custom_prior", None),
-            )
 
         results = []
         for i in range(1, len(data.visitors)):
@@ -594,19 +551,7 @@ class FrequentistEngine:
             p_value = self.run_ztest(diff, se_diff, data.alternative)
             is_sig = bool(p_value < alpha)
             ci = compute_interval_difference(diff, se_diff, alpha, data.alternative)
-
-            # Analytical power (shares the φ-scaled unpooled SE) feeds the risk.
-            power = self.calculate_analytical_power(
-                diff, se_diff, alpha, data.alternative
-            )
-            risk = self.assess_decision_risk(
-                is_sig, alpha, power, prior, data.alternative
-            )
-            fpr = risk["value"] if is_sig else None
-
-            conclusion = self.generate_conclusion_statement(
-                labels[i], is_sig, uplift, false_positive_risk=fpr
-            )
+            conclusion = self.generate_conclusion_statement(labels[i], is_sig, uplift)
 
             results.append(
                 FrequentistResult(
@@ -619,9 +564,6 @@ class FrequentistEngine:
                     is_significant=is_sig,
                     ci_diff=ci,
                     conclusion=conclusion,
-                    observed_power=power,
-                    decision_risk_metric=risk["metric"],
-                    decision_risk_value=risk["value"],
                 )
             )
 
