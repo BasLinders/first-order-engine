@@ -65,6 +65,8 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "style: auto-fix flake8 cosmetic issues"
+          branch: autofix/${{ github.ref_name }}
+          create_branch: true
 
   # ── 2. Lint ───────────────────────────────────────────────────────────────
   # Runs after autoformat on push; runs directly on pull_request (no autoformat
