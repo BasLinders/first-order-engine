@@ -1,6 +1,6 @@
 from enum import Enum
 from datetime import date
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from foe.core.validators import validate_experiment_data
@@ -118,6 +118,97 @@ class BayesianResult(BaseModel):
     prior_alphas: Optional[List[float]] = None
     prior_betas: Optional[List[float]] = None
     biz_case: Optional[BusinessCaseInput] = None
+
+
+# --- Continuous metric analysis ---
+
+
+class AnalysisUnit(str, Enum):
+    """
+    The unit one row of the metric represents. Determines zero handling and,
+    for the Gamma family, which likelihood model is used.
+
+    PER_VISITOR
+        Rows are visitors; non-buyers count as 0 and are kept. Captures both
+        conversion-rate and spend effects. The Gamma path uses a two-part
+        (hurdle) model: Bernoulli(convert) x Gamma(spend | convert).
+    PER_TRANSACTION
+        Rows are orders; zero-value rows are excluded. Measures order value
+        among buyers only. The Gamma path uses a single Gamma per variant.
+    """
+
+    PER_VISITOR = "per_visitor"
+    PER_TRANSACTION = "per_transaction"
+
+
+class ContinuousApproach(str, Enum):
+    """Which analysis path the engine should take."""
+
+    HEURISTIC = "heuristic"          # normality/variance decision tree
+    GAMMA_GLM = "gamma"              # Gamma / two-part likelihood-ratio test
+
+
+class ContinuousMetricConfig(BaseModel):
+    """
+    Settings envelope for a continuous-metric comparison.
+
+    The row-level data itself is passed to the engine as a ``pandas.DataFrame``
+    (a SQL/CSV export), not through this model: encoding hundreds of thousands
+    of rows as JSON would be wasteful and is the wrong shape for distributional
+    analysis. This frozen model is the JSON-serializable contract carrying only
+    the settings that select and parameterize the test.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kpi: str = Field(..., description="Name of the numeric metric column to test.")
+    group_col: str = Field(
+        "experience_variant_label",
+        description="Name of the categorical variant column.",
+    )
+    approach: ContinuousApproach = ContinuousApproach.HEURISTIC
+    unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION
+    control_label: Optional[str] = Field(
+        None,
+        description="Control variant for Gamma post-hoc pairwise comparisons (3+ groups).",
+    )
+    alpha: float = Field(0.05, gt=0.0, lt=1.0, description="Significance threshold.")
+
+
+class GammaPosthocResult(BaseModel):
+    """A single pairwise Gamma / two-part LRT comparison against the control."""
+
+    model_config = ConfigDict(frozen=True)
+
+    comparison: str
+    lrt_stat: float
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    p_adj_bonferroni: float = Field(..., ge=0.0, le=1.0)
+    is_significant: bool
+
+
+class ContinuousMetricResult(BaseModel):
+    """
+    Standardized, JSON-serializable output for a continuous-metric comparison.
+    Replaces the previous loose result dict.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kpi: str
+    approach_used: ContinuousApproach
+    unit: AnalysisUnit
+    test_name: str
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    is_significant: bool
+    # Diagnostics are only populated for the heuristic path; None under Gamma.
+    is_normal: Optional[bool] = None
+    is_homogeneous: Optional[bool] = None
+    summary_stats: List[Dict[str, Any]] = Field(default_factory=list)
+    posthoc_results: Optional[List[GammaPosthocResult]] = None
+    conclusion: str = ""
+    # Non-fatal interpretive notices (e.g. dropped zero rows, no zeros found).
+    warnings: List[str] = Field(default_factory=list)
 
 
 # --- Sequential ---
