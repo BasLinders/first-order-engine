@@ -148,6 +148,24 @@ class ContinuousApproach(str, Enum):
     GAMMA_GLM = "gamma"              # Gamma / two-part likelihood-ratio test
 
 
+class VarianceScaling(str, Enum):
+    """
+    How the treatment group's variance is assumed to relate to the control's
+    when planning a continuous-metric test (sample size / power).
+
+    EQUAL
+        Homoscedastic: treatment variance == control variance (the standard
+        two-sample default).
+    CV_CONSTANT
+        The lift scales the mean and holds the coefficient of variation fixed,
+        so the treatment variance grows as sigma**2 * (1 + r)**2. For a positive
+        lift this is the more conservative choice (more sample / less power).
+    """
+
+    EQUAL = "equal"
+    CV_CONSTANT = "cv_constant"
+
+
 class ContinuousMetricConfig(BaseModel):
     """
     Settings envelope for a continuous-metric comparison.
