@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from scipy.stats import shapiro, levene, kruskal, mannwhitneyu
+from scipy.stats import normaltest, levene, kruskal, mannwhitneyu
 from scipy.optimize import minimize
 from scipy import stats
 from pingouin import welch_anova
@@ -401,12 +401,16 @@ class ContinuousMetricEngine:
     ) -> tuple[str, float, bool, bool]:
         model = smf.ols(f"{kpi} ~ C({group_col})", data=work).fit()
 
-        # Normality of residuals (Shapiro is unreliable / capped at N > 5000).
+        # Normality of residuals via D'Agostino's K^2 omnibus test (skewness +
+        # kurtosis): reliable for large samples and no N > 5000 warning, so the
+        # full residual vector is used. The kurtosis component needs N >= 20;
+        # below that, fall back to non-parametric handling.
         resid = model.resid.dropna()
-        if len(resid) > 5000:
-            resid = resid.sample(5000, random_state=42)
-        _, p_norm = shapiro(resid)
-        is_normal = bool(p_norm >= 0.05)
+        if len(resid) >= 20:
+            _, p_norm = normaltest(resid)
+            is_normal = bool(p_norm >= 0.05)
+        else:
+            is_normal = False
 
         # Homogeneity of variance.
         _, p_var = levene(*groups)
