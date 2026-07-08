@@ -569,6 +569,8 @@ class FrequentistEngine:
         alpha: float = 0.05,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
         projection_period: int = 183,
+        se_aov_ctrl: float = 0.0,
+        se_aov_chal: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Like estimate_monetary_impact, but allows Control and Challenger to
@@ -580,24 +582,43 @@ class FrequentistEngine:
         shared AOV; that is only valid when AOV is identical across variants,
         since revenue(d) = d * aov is not equal to
         p_chal * aov_chal - p_ctrl * aov_ctrl when aov_chal != aov_ctrl. This
-        method instead builds the value-weighted difference directly and
-        propagates its variance from each variant's own conversion-rate SE,
-        treating AOV as a fixed known constant (no AOV uncertainty modeled):
+        method instead builds the value-weighted difference directly:
 
             X = p_chal * aov_chal - p_ctrl * aov_ctrl
+
+        By default (se_aov_ctrl = se_aov_chal = 0.0) AOV is treated as a fixed
+        known constant, and only conversion-rate uncertainty is propagated:
+
             SE(X) = sqrt(aov_chal^2 * se_chal^2 + aov_ctrl^2 * se_ctrl^2)
 
-        assuming p_ctrl and p_chal are independent. The CI for X reuses
+        This understates uncertainty whenever AOV itself is an ESTIMATE (e.g.
+        the mean of a finite sample of order values) rather than a truly known
+        constant: a "guaranteed" AOV gap can make X look confidently positive
+        even when the underlying conversion-rate difference alone is nowhere
+        near significant. Passing se_aov_ctrl/se_aov_chal (e.g.
+        sample_std_of_order_value / sqrt(n_orders)) propagates that estimation
+        uncertainty too, via the standard delta-method variance of a product
+        of two independent random variables (dropping the second-order
+        Var(p)*Var(aov) cross term):
+
+            Var(p*aov) ~= aov^2 * Var(p) + p^2 * Var(aov)
+            SE(X) = sqrt(
+                aov_chal^2*se_chal^2 + p_chal^2*se_aov_chal^2
+                + aov_ctrl^2*se_ctrl^2 + p_ctrl^2*se_aov_ctrl^2
+            )
+
+        assuming p_ctrl and p_chal are independent, and AOV and conversion
+        status are independent within a variant. The CI for X reuses
         compute_interval_difference, so a one-sided alternative still
         produces a +/-inf bound rather than being silently clipped.
 
         Reduces to estimate_monetary_impact's result when aov_ctrl == aov_chal
-        (X = aov * diff, SE(X) = aov * se_diff).
+        and se_aov_ctrl == se_aov_chal == 0.0 (X = aov * diff, SE(X) = aov * se_diff).
         """
         diff_value = (p_chal * aov_chal) - (p_ctrl * aov_ctrl)
-        se_diff_value = math.sqrt(
-            (aov_chal ** 2) * (se_chal ** 2) + (aov_ctrl ** 2) * (se_ctrl ** 2)
-        )
+        var_chal = (aov_chal ** 2) * (se_chal ** 2) + (p_chal ** 2) * (se_aov_chal ** 2)
+        var_ctrl = (aov_ctrl ** 2) * (se_ctrl ** 2) + (p_ctrl ** 2) * (se_aov_ctrl ** 2)
+        se_diff_value = math.sqrt(var_chal + var_ctrl)
         ci_diff_value = compute_interval_difference(
             diff_value, se_diff_value, alpha=alpha, alternative=alternative
         )
