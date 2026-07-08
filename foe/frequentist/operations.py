@@ -643,7 +643,28 @@ class FrequentistEngine:
         is_significant: bool,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> str:
-        """UI-agnostic narrative summary of estimate_monetary_impact's output."""
+        """
+        UI-agnostic narrative summary of estimate_monetary_impact's output.
+    
+        `alternative` must match whatever was passed to estimate_monetary_impact
+        (and therefore to compute_interval_difference) when this monetary_result
+        was generated. See compute_interval_difference's docstring for the
+        underlying convention:
+    
+            GREATER   -> lower bound only: (diff - z*se, +inf)
+            LESS      -> upper bound only: (-inf, diff + z*se)
+            TWO_SIDED -> symmetric:        (diff - z*se, diff + z*se)
+    
+        Concretely: for a one-sided test, one side of monetary_result's CI is
+        always +/-inf by construction -- that is not a missing value, a fallback,
+        or a sign of low confidence, it's the definition of "one-sided." This
+        function therefore branches on `alternative` for the significant case, so
+        a significant GREATER result reads as an open-ended "at least X" claim
+        rather than pairing a real number with "unbounded" as if they formed a
+        comparable range. If `alternative` doesn't match what actually produced
+        monetary_result, the wording here will misrepresent the interval, since
+        this function has no independent way to detect that mismatch.
+        """
     
         def fmt(x: float) -> str:
             return "unbounded" if math.isinf(x) else f"{x:,.0f}"
@@ -662,9 +683,6 @@ class FrequentistEngine:
                 "Treat it as illustrative, not a business case to act on."
             )
     
-        # Significant one-sided cases: only one side of the interval is meaningful.
-        # Say so explicitly instead of pairing a real number with "unbounded" as
-        # if they were a comparable pair.
         if alternative == AlternativeHypothesis.GREATER:
             return (
                 f"'{variant_name}' is projected to generate a monetary uplift of "
@@ -683,7 +701,6 @@ class FrequentistEngine:
                 "the actual size, not the floor."
             )
     
-        # TWO_SIDED, significant: both bounds are real and both are meaningful.
         if point >= 0:
             return (
                 f"'{variant_name}' is projected to generate a monetary uplift of "
