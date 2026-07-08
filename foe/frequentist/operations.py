@@ -641,16 +641,19 @@ class FrequentistEngine:
         variant_name: str,
         monetary_result: Dict[str, Any],
         is_significant: bool,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> str:
         """UI-agnostic narrative summary of estimate_monetary_impact's output."""
-
+    
         def fmt(x: float) -> str:
             return "unbounded" if math.isinf(x) else f"{x:,.0f}"
-
+    
         point = monetary_result["point_estimate"]
+        ci_low = monetary_result["ci_low"]
+        ci_high = monetary_result["ci_high"]
         period = monetary_result["projection_period"]
-        range_str = f"{fmt(monetary_result['ci_low'])} to {fmt(monetary_result['ci_high'])}"
-
+        range_str = f"{fmt(ci_low)} to {fmt(ci_high)}"
+    
         if not is_significant:
             return (
                 f"'{variant_name}' is not statistically significant, so this monetary "
@@ -658,7 +661,29 @@ class FrequentistEngine:
                 "in the observed effect -- including no impact at all, or a loss. "
                 "Treat it as illustrative, not a business case to act on."
             )
-
+    
+        # Significant one-sided cases: only one side of the interval is meaningful.
+        # Say so explicitly instead of pairing a real number with "unbounded" as
+        # if they were a comparable pair.
+        if alternative == AlternativeHypothesis.GREATER:
+            return (
+                f"'{variant_name}' is projected to generate a monetary uplift of "
+                f"at least {fmt(ci_low)} over the next {period} days. This is a "
+                "one-sided estimate, so no statistical upper bound is calculated -- "
+                f"the point estimate ({fmt(point)}) is your best single guess for "
+                "the actual size, not the ceiling."
+            )
+    
+        if alternative == AlternativeHypothesis.LESS:
+            return (
+                f"'{variant_name}' is projected to cost at most {fmt(abs(ci_high))} "
+                f"over the next {period} days relative to control. This is a "
+                "one-sided estimate, so no statistical lower bound is calculated -- "
+                f"the point estimate ({fmt(point)}) is your best single guess for "
+                "the actual size, not the floor."
+            )
+    
+        # TWO_SIDED, significant: both bounds are real and both are meaningful.
         if point >= 0:
             return (
                 f"'{variant_name}' is projected to generate a monetary uplift of "
