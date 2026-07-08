@@ -457,3 +457,77 @@ def test_per_variant_aov_conclusion_is_reusable(engine):
     conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
     assert "Variant B" in conclusion
     assert "uplift" in conclusion
+
+
+def test_aov_uncertainty_defaults_to_zero_unchanged(engine):
+    """
+    Omitting se_aov_ctrl/se_aov_chal should reproduce the exact prior
+    behavior (AOV treated as a fixed known constant) -- backward compatible.
+    """
+    kwargs = dict(
+        p_ctrl=0.052367, se_ctrl=0.00057, aov_ctrl=125.0,
+        p_chal=0.053262, se_chal=0.00058, aov_chal=127.0,
+        daily_visitors=10721.43, alpha=0.05,
+        alternative=AlternativeHypothesis.GREATER,
+    )
+    explicit_zero = engine.estimate_monetary_impact_per_variant(
+        se_aov_ctrl=0.0, se_aov_chal=0.0, **kwargs
+    )
+    omitted = engine.estimate_monetary_impact_per_variant(**kwargs)
+    assert explicit_zero == omitted
+
+
+def test_aov_uncertainty_widens_ci_and_can_flip_lower_bound_negative(engine):
+    """
+    Reproduces the reported case: conversion rates are not significantly
+    different (roughly 5.24% vs 5.33% at n~150k), but Control/Challenger AOV
+    differ (125 vs 127). Treating that AOV gap as certain can leave the
+    one-sided lower bound positive even though the rate difference alone
+    isn't significant. Propagating AOV's own sampling uncertainty (as if AOV
+    were estimated from a comparable-sized order sample) should widen the
+    interval, lowering (or flipping the sign of) the lower bound.
+    """
+    p_ctrl, se_ctrl = 7855 / 150000, math.sqrt((7855 / 150000) * (1 - 7855 / 150000) / 150000)
+    p_chal, se_chal = 8000 / 150200, math.sqrt((8000 / 150200) * (1 - 8000 / 150200) / 150200)
+    daily_visitors = (150000 + 150200) / 28
+
+    no_aov_uncertainty = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=p_ctrl, se_ctrl=se_ctrl, aov_ctrl=125.0,
+        p_chal=p_chal, se_chal=se_chal, aov_chal=127.0,
+        daily_visitors=daily_visitors, alpha=0.05,
+        alternative=AlternativeHypothesis.GREATER,
+    )
+
+    # AOV estimated from order-count-sized samples with plausible spread
+    # (CV=0.5, a common e-commerce assumption) -- se_aov = aov*cv/sqrt(n_orders).
+    se_aov_ctrl = 125.0 * 0.5 / math.sqrt(7855)
+    se_aov_chal = 127.0 * 0.5 / math.sqrt(8000)
+    with_aov_uncertainty = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=p_ctrl, se_ctrl=se_ctrl, aov_ctrl=125.0,
+        p_chal=p_chal, se_chal=se_chal, aov_chal=127.0,
+        daily_visitors=daily_visitors, alpha=0.05,
+        alternative=AlternativeHypothesis.GREATER,
+        se_aov_ctrl=se_aov_ctrl, se_aov_chal=se_aov_chal,
+    )
+
+    # Point estimate (the value-weighted diff itself) is unaffected by SE.
+    assert with_aov_uncertainty["point_estimate"] == pytest.approx(no_aov_uncertainty["point_estimate"])
+    # But propagating AOV's own uncertainty must push the one-sided lower
+    # bound down (a wider, more honest interval), not up.
+    assert with_aov_uncertainty["ci_low"] < no_aov_uncertainty["ci_low"]
+
+
+def test_aov_uncertainty_included_in_two_sided_width(engine):
+    """Adding AOV uncertainty should widen a Two-sided interval too, not just shift the one-sided bound."""
+    kwargs = dict(
+        p_ctrl=0.10, se_ctrl=0.004, aov_ctrl=50.0,
+        p_chal=0.12, se_chal=0.0043, aov_chal=55.0,
+        daily_visitors=1000.0, alpha=0.05,
+    )
+    narrow = engine.estimate_monetary_impact_per_variant(**kwargs)
+    wide = engine.estimate_monetary_impact_per_variant(
+        se_aov_ctrl=5.0, se_aov_chal=5.0, **kwargs
+    )
+    narrow_width = narrow["ci_high"] - narrow["ci_low"]
+    wide_width = wide["ci_high"] - wide["ci_low"]
+    assert wide_width > narrow_width
