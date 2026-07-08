@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -288,3 +290,87 @@ def test_variance_reduction_factor_tightens_intervals(engine):
     std_width = standard.ci_diff[1] - standard.ci_diff[0]
     adj_width = adjusted.ci_diff[1] - adjusted.ci_diff[0]
     assert adj_width < std_width
+
+
+def test_monetary_impact_point_estimate_scales_linearly(engine):
+    """
+    revenue(d) = d * daily_visitors * aov * projection_period. Doubling any
+    one factor should double the point estimate and both CI bounds.
+    """
+    result = engine.estimate_monetary_impact(
+        diff=0.02,
+        ci_diff=(0.01, 0.03),
+        daily_visitors=1000,
+        aov=50,
+        projection_period=183,
+    )
+    assert result["point_estimate"] == pytest.approx(0.02 * 1000 * 50 * 183)
+    assert result["ci_low"] == pytest.approx(0.01 * 1000 * 50 * 183)
+    assert result["ci_high"] == pytest.approx(0.03 * 1000 * 50 * 183)
+
+    doubled = engine.estimate_monetary_impact(
+        diff=0.02,
+        ci_diff=(0.01, 0.03),
+        daily_visitors=2000,
+        aov=50,
+        projection_period=183,
+    )
+    assert doubled["point_estimate"] == pytest.approx(result["point_estimate"] * 2)
+    assert doubled["ci_low"] == pytest.approx(result["ci_low"] * 2)
+    assert doubled["ci_high"] == pytest.approx(result["ci_high"] * 2)
+
+
+def test_monetary_impact_propagates_infinite_ci_bound(engine):
+    """
+    A one-sided test's infinite CI bound (see test_one_sided_hypothesis)
+    should propagate as +/-inf, not be silently clipped to a finite number.
+    """
+    result = engine.estimate_monetary_impact(
+        diff=0.02,
+        ci_diff=(0.01, float("inf")),
+        daily_visitors=1000,
+        aov=50,
+        projection_period=183,
+    )
+    assert result["ci_high"] == float("inf")
+    assert math.isfinite(result["ci_low"])
+    assert math.isfinite(result["point_estimate"])
+
+
+def test_monetary_conclusion_formats_infinite_bound_as_unbounded(engine):
+    result = engine.estimate_monetary_impact(
+        diff=0.02,
+        ci_diff=(0.01, float("inf")),
+        daily_visitors=1000,
+        aov=50,
+        projection_period=183,
+    )
+    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    assert "unbounded" in conclusion
+    assert "inf" not in conclusion.replace("unbounded", "")
+
+
+def test_monetary_conclusion_negative_point_estimate_reads_as_a_cost(engine):
+    result = engine.estimate_monetary_impact(
+        diff=-0.02,
+        ci_diff=(-0.03, -0.01),
+        daily_visitors=1000,
+        aov=50,
+        projection_period=183,
+    )
+    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    assert "cost" in conclusion
+    assert "-" not in conclusion.split("cost")[1].split("over")[0]  # magnitude, not a signed number
+
+
+def test_monetary_conclusion_non_significant_is_illustrative_only(engine):
+    result = engine.estimate_monetary_impact(
+        diff=0.005,
+        ci_diff=(-0.01, 0.02),
+        daily_visitors=1000,
+        aov=50,
+        projection_period=183,
+    )
+    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=False)
+    assert "not statistically significant" in conclusion
+    assert "illustrative" in conclusion
