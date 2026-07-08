@@ -1,8 +1,9 @@
+import math
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 from scipy.stats import norm
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
 from foe.frequentist.confidence import compute_interval_difference
@@ -513,6 +514,83 @@ class FrequentistEngine:
             "prior": float(prior),
             "elevated": bool(value > 0.20),
         }
+
+    # ------------------------------------------------------------------ #
+    #  Monetary impact (deterministic)
+    #
+    #  Unlike the Bayesian engine's run_monetary_projection, this does not
+    #  simulate a posterior: a frequentist result has no distribution over
+    #  the true rate, only a point estimate and a confidence interval. These
+    #  helpers translate that point estimate and CI directly into a revenue
+    #  range via simple arithmetic, so the claim never exceeds what the CI
+    #  actually licenses ("with X% confidence, between low and high").
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def estimate_monetary_impact(
+        diff: float,
+        ci_diff: Tuple[float, float],
+        daily_visitors: float,
+        aov: float,
+        projection_period: int = 183,
+    ) -> Dict[str, Any]:
+        """
+        Deterministically scales an absolute conversion-rate difference (and
+        its confidence interval) into a monetary range over projection_period
+        days, given expected daily traffic and Average Order Value.
+
+        revenue(d) = d * daily_visitors * aov * projection_period
+
+        A one-sided test's infinite CI bound (see FrequentistResult.ci_diff)
+        propagates as +/-inf rather than being silently clipped; render it as
+        "unbounded" rather than a literal number (see generate_monetary_conclusion).
+        """
+        def revenue(rate_diff: float) -> float:
+            return rate_diff * daily_visitors * aov * projection_period
+
+        return {
+            "point_estimate": revenue(diff),
+            "ci_low": revenue(ci_diff[0]),
+            "ci_high": revenue(ci_diff[1]),
+            "daily_visitors": daily_visitors,
+            "aov": aov,
+            "projection_period": projection_period,
+        }
+
+    @staticmethod
+    def generate_monetary_conclusion(
+        variant_name: str,
+        monetary_result: Dict[str, Any],
+        is_significant: bool,
+    ) -> str:
+        """UI-agnostic narrative summary of estimate_monetary_impact's output."""
+
+        def fmt(x: float) -> str:
+            return "unbounded" if math.isinf(x) else f"{x:,.0f}"
+
+        point = monetary_result["point_estimate"]
+        period = monetary_result["projection_period"]
+        range_str = f"{fmt(monetary_result['ci_low'])} to {fmt(monetary_result['ci_high'])}"
+
+        if not is_significant:
+            return (
+                f"'{variant_name}' is not statistically significant, so this monetary "
+                f"range ({range_str} over {period} days) reflects the full uncertainty "
+                "in the observed effect -- including no impact at all, or a loss. "
+                "Treat it as illustrative, not a business case to act on."
+            )
+
+        if point >= 0:
+            return (
+                f"'{variant_name}' is projected to generate a monetary uplift of "
+                f"{fmt(point)} over the next {period} days, with {range_str} as the "
+                "confidence range around that estimate."
+            )
+        return (
+            f"'{variant_name}' is projected to cost {fmt(abs(point))} over the next "
+            f"{period} days relative to control, with {range_str} as the confidence "
+            "range around that estimate."
+        )
 
     # ------------------------------------------------------------------ #
     #  Orchestration
