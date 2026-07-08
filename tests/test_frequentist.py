@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from foe.frequentist.operations import FrequentistEngine
-from foe.frequentist.confidence import compute_non_inferiority
+from foe.frequentist.confidence import compute_non_inferiority, compute_interval_difference
 from foe.core.models import ExperimentInput, AlternativeHypothesis
 
 
@@ -374,3 +374,86 @@ def test_monetary_conclusion_non_significant_is_illustrative_only(engine):
     conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=False)
     assert "not statistically significant" in conclusion
     assert "illustrative" in conclusion
+
+
+def test_per_variant_aov_reduces_to_shared_aov_when_equal(engine):
+    """
+    When aov_ctrl == aov_chal, estimate_monetary_impact_per_variant should
+    match estimate_monetary_impact given the same underlying diff/se_diff,
+    since X = aov*(p_chal - p_ctrl) = aov*diff and
+    SE(X) = aov*sqrt(se_chal^2 + se_ctrl^2) = aov*se_diff in that case.
+    """
+    p_ctrl, se_ctrl = 0.10, 0.004
+    p_chal, se_chal = 0.12, 0.0043
+    aov = 50.0
+    daily_visitors = 1000.0
+
+    diff = p_chal - p_ctrl
+    se_diff = math.sqrt(se_chal ** 2 + se_ctrl ** 2)
+    ci_diff = compute_interval_difference(diff, se_diff, alpha=0.05)
+
+    shared = engine.estimate_monetary_impact(
+        diff=diff, ci_diff=ci_diff, daily_visitors=daily_visitors, aov=aov,
+    )
+    per_variant = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=p_ctrl, se_ctrl=se_ctrl, aov_ctrl=aov,
+        p_chal=p_chal, se_chal=se_chal, aov_chal=aov,
+        daily_visitors=daily_visitors,
+    )
+
+    assert per_variant["point_estimate"] == pytest.approx(shared["point_estimate"])
+    assert per_variant["ci_low"] == pytest.approx(shared["ci_low"])
+    assert per_variant["ci_high"] == pytest.approx(shared["ci_high"])
+
+
+def test_per_variant_aov_diverges_when_aov_differs(engine):
+    """
+    A pricing test where the challenger has a materially higher AOV should
+    produce a bigger point estimate than treating both variants as if they
+    shared the challenger's (or control's) AOV -- the value-weighted
+    difference is not a simple rate-difference scaling once AOV differs.
+    """
+    p_ctrl, se_ctrl = 0.10, 0.004
+    p_chal, se_chal = 0.10, 0.004  # identical conversion rate
+    daily_visitors = 1000.0
+
+    same_aov = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=p_ctrl, se_ctrl=se_ctrl, aov_ctrl=50.0,
+        p_chal=p_chal, se_chal=se_chal, aov_chal=50.0,
+        daily_visitors=daily_visitors,
+    )
+    higher_chal_aov = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=p_ctrl, se_ctrl=se_ctrl, aov_ctrl=50.0,
+        p_chal=p_chal, se_chal=se_chal, aov_chal=80.0,
+        daily_visitors=daily_visitors,
+    )
+
+    # Equal conversion rates but a materially higher challenger AOV should
+    # show a positive monetary uplift purely from the AOV difference, even
+    # though estimate_monetary_impact (single shared AOV) would show zero.
+    assert same_aov["point_estimate"] == pytest.approx(0.0, abs=1e-9)
+    assert higher_chal_aov["point_estimate"] > 0
+
+
+def test_per_variant_aov_propagates_infinite_ci_bound(engine):
+    result = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=0.10, se_ctrl=0.004, aov_ctrl=50.0,
+        p_chal=0.12, se_chal=0.0043, aov_chal=65.0,
+        daily_visitors=1000.0,
+        alternative=AlternativeHypothesis.GREATER,
+    )
+    assert result["ci_high"] == float("inf")
+    assert math.isfinite(result["ci_low"])
+    assert math.isfinite(result["point_estimate"])
+
+
+def test_per_variant_aov_conclusion_is_reusable(engine):
+    """generate_monetary_conclusion should work unchanged on the per-variant result shape."""
+    result = engine.estimate_monetary_impact_per_variant(
+        p_ctrl=0.10, se_ctrl=0.004, aov_ctrl=50.0,
+        p_chal=0.12, se_chal=0.0043, aov_chal=65.0,
+        daily_visitors=1000.0,
+    )
+    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    assert "Variant B" in conclusion
+    assert "uplift" in conclusion

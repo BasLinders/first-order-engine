@@ -558,6 +558,64 @@ class FrequentistEngine:
         }
 
     @staticmethod
+    def estimate_monetary_impact_per_variant(
+        p_ctrl: float,
+        se_ctrl: float,
+        aov_ctrl: float,
+        p_chal: float,
+        se_chal: float,
+        aov_chal: float,
+        daily_visitors: float,
+        alpha: float = 0.05,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        projection_period: int = 183,
+    ) -> Dict[str, Any]:
+        """
+        Like estimate_monetary_impact, but allows Control and Challenger to
+        carry different Average Order Values -- e.g. a pricing or
+        merchandising test where AOV itself may differ by variant, not just
+        the conversion rate.
+
+        estimate_monetary_impact scales a single rate-difference CI by one
+        shared AOV; that is only valid when AOV is identical across variants,
+        since revenue(d) = d * aov is not equal to
+        p_chal * aov_chal - p_ctrl * aov_ctrl when aov_chal != aov_ctrl. This
+        method instead builds the value-weighted difference directly and
+        propagates its variance from each variant's own conversion-rate SE,
+        treating AOV as a fixed known constant (no AOV uncertainty modeled):
+
+            X = p_chal * aov_chal - p_ctrl * aov_ctrl
+            SE(X) = sqrt(aov_chal^2 * se_chal^2 + aov_ctrl^2 * se_ctrl^2)
+
+        assuming p_ctrl and p_chal are independent. The CI for X reuses
+        compute_interval_difference, so a one-sided alternative still
+        produces a +/-inf bound rather than being silently clipped.
+
+        Reduces to estimate_monetary_impact's result when aov_ctrl == aov_chal
+        (X = aov * diff, SE(X) = aov * se_diff).
+        """
+        diff_value = (p_chal * aov_chal) - (p_ctrl * aov_ctrl)
+        se_diff_value = math.sqrt(
+            (aov_chal ** 2) * (se_chal ** 2) + (aov_ctrl ** 2) * (se_ctrl ** 2)
+        )
+        ci_diff_value = compute_interval_difference(
+            diff_value, se_diff_value, alpha=alpha, alternative=alternative
+        )
+
+        def revenue(x: float) -> float:
+            return x * daily_visitors * projection_period
+
+        return {
+            "point_estimate": revenue(diff_value),
+            "ci_low": revenue(ci_diff_value[0]),
+            "ci_high": revenue(ci_diff_value[1]),
+            "daily_visitors": daily_visitors,
+            "aov_ctrl": aov_ctrl,
+            "aov_chal": aov_chal,
+            "projection_period": projection_period,
+        }
+
+    @staticmethod
     def generate_monetary_conclusion(
         variant_name: str,
         monetary_result: Dict[str, Any],
