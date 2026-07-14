@@ -645,16 +645,16 @@ class FrequentistEngine:
     ) -> str:
         """
         UI-agnostic narrative summary of estimate_monetary_impact's output.
-    
+
         `alternative` must match whatever was passed to estimate_monetary_impact
         (and therefore to compute_interval_difference) when this monetary_result
         was generated. See compute_interval_difference's docstring for the
         underlying convention:
-    
+
             GREATER   -> lower bound only: (diff - z*se, +inf)
             LESS      -> upper bound only: (-inf, diff + z*se)
             TWO_SIDED -> symmetric:        (diff - z*se, diff + z*se)
-    
+
         Concretely: for a one-sided test, one side of monetary_result's CI is
         always +/-inf by construction -- that is not a missing value, a fallback,
         or a sign of low confidence, it's the definition of "one-sided." This
@@ -665,16 +665,16 @@ class FrequentistEngine:
         monetary_result, the wording here will misrepresent the interval, since
         this function has no independent way to detect that mismatch.
         """
-    
+
         def fmt(x: float) -> str:
             return "unbounded" if math.isinf(x) else f"{x:,.0f}"
-    
+
         point = monetary_result["point_estimate"]
         ci_low = monetary_result["ci_low"]
         ci_high = monetary_result["ci_high"]
         period = monetary_result["projection_period"]
         range_str = f"{fmt(ci_low)} to {fmt(ci_high)}"
-    
+
         if not is_significant:
             return (
                 f"'{variant_name}' is not statistically significant, so this monetary "
@@ -682,7 +682,7 @@ class FrequentistEngine:
                 "in the observed effect -- including no impact at all, or a loss. "
                 "Treat it as illustrative, not a business case to act on."
             )
-    
+
         if alternative == AlternativeHypothesis.GREATER:
             return (
                 f"'{variant_name}' is projected to generate a monetary uplift of "
@@ -691,7 +691,7 @@ class FrequentistEngine:
                 f"the point estimate ({fmt(point)}) is your best single guess for "
                 "the actual size, not the ceiling."
             )
-    
+
         if alternative == AlternativeHypothesis.LESS:
             return (
                 f"'{variant_name}' is projected to cost at most {fmt(abs(ci_high))} "
@@ -700,7 +700,7 @@ class FrequentistEngine:
                 f"the point estimate ({fmt(point)}) is your best single guess for "
                 "the actual size, not the floor."
             )
-    
+
         if point >= 0:
             return (
                 f"'{variant_name}' is projected to generate a monetary uplift of "
