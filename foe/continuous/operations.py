@@ -1,3 +1,4 @@
+import math
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
@@ -8,6 +9,7 @@ from scipy import stats
 from pingouin import welch_anova
 
 from foe.core.models import (
+    AlternativeHypothesis,
     AnalysisUnit,
     ContinuousApproach,
     ContinuousMetricConfig,
@@ -15,6 +17,7 @@ from foe.core.models import (
     GammaPosthocResult,
 )
 from foe.core.validators import validate_continuous_data
+from foe.frequentist.confidence import compute_interval_difference
 
 
 class ContinuousMetricEngine:
@@ -431,3 +434,153 @@ class ContinuousMetricEngine:
 
         _, p = mannwhitneyu(groups[0], groups[1], alternative="two-sided")
         return "Mann-Whitney U", float(p), is_normal, is_homogeneous
+
+    # ------------------------------------------------------------------ #
+    # Business case (user-level monetary projection)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def estimate_monetary_impact_per_variant(
+        mean_ctrl: float,
+        std_ctrl: float,
+        n_ctrl: int,
+        mean_chal: float,
+        std_chal: float,
+        n_chal: int,
+        unit: AnalysisUnit,
+        daily_visitors: float,
+        visitors_ctrl: int | None = None,
+        visitors_chal: int | None = None,
+        alpha: float = 0.05,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        projection_period: int = 183,
+    ) -> dict:
+        """
+        Projects the monetary impact of a continuous, user-level KPI (revenue,
+        profit, ...) between a control and a challenger variant over a future
+        period, via the same delta-method construction as
+        ``FrequentistEngine.estimate_monetary_impact_per_variant`` -- the KPI
+        mean here plays the role AOV plays there, and an order rate plays the
+        role conversion rate plays there.
+
+        unit = PER_VISITOR: the group means already average over every visitor
+            (non-buyers included as 0), so they *are* value-per-visitor; the
+            order rate is fixed at 1 for both arms.
+        unit = PER_TRANSACTION: the group means are value-per-order (positive
+            rows only); ``visitors_ctrl``/``visitors_chal`` (total per-variant
+            visitor counts) are required so each arm's order rate (n / visitors)
+            can be derived and folded into the projection -- without it, a
+            per-order lift can't be translated into a per-visitor (and
+            therefore daily-traffic-scaled) monetary impact.
+        """
+        if unit == AnalysisUnit.PER_VISITOR:
+            rate_ctrl = rate_chal = 1.0
+            se_rate_ctrl = se_rate_chal = 0.0
+        else:
+            if not visitors_ctrl or not visitors_chal:
+                raise ValueError(
+                    "visitors_ctrl and visitors_chal (total per-variant visitor "
+                    "counts) are required to project a per-transaction business "
+                    "case; they are needed to derive each variant's order rate."
+                )
+            rate_ctrl = n_ctrl / visitors_ctrl
+            rate_chal = n_chal / visitors_chal
+            se_rate_ctrl = (
+                math.sqrt(rate_ctrl * (1.0 - rate_ctrl) / visitors_ctrl)
+                if 0.0 < rate_ctrl < 1.0 else 0.0
+            )
+            se_rate_chal = (
+                math.sqrt(rate_chal * (1.0 - rate_chal) / visitors_chal)
+                if 0.0 < rate_chal < 1.0 else 0.0
+            )
+
+        se_mean_ctrl = (std_ctrl / math.sqrt(n_ctrl)) if n_ctrl > 0 else 0.0
+        se_mean_chal = (std_chal / math.sqrt(n_chal)) if n_chal > 0 else 0.0
+
+        diff_value = (rate_chal * mean_chal) - (rate_ctrl * mean_ctrl)
+        var_chal = (mean_chal ** 2) * (se_rate_chal ** 2) + (rate_chal ** 2) * (se_mean_chal ** 2)
+        var_ctrl = (mean_ctrl ** 2) * (se_rate_ctrl ** 2) + (rate_ctrl ** 2) * (se_mean_ctrl ** 2)
+        se_diff_value = math.sqrt(var_chal + var_ctrl)
+
+        ci_diff_value = compute_interval_difference(
+            diff_value, se_diff_value, alpha=alpha, alternative=alternative
+        )
+
+        def revenue(x: float) -> float:
+            return x * daily_visitors * projection_period
+
+        return {
+            "point_estimate": revenue(diff_value),
+            "ci_low": revenue(ci_diff_value[0]),
+            "ci_high": revenue(ci_diff_value[1]),
+            "daily_visitors": daily_visitors,
+            "mean_ctrl": mean_ctrl,
+            "mean_chal": mean_chal,
+            "rate_ctrl": rate_ctrl,
+            "rate_chal": rate_chal,
+            "projection_period": projection_period,
+            "unit": unit.value,
+        }
+
+    @staticmethod
+    def generate_monetary_conclusion(
+        variant_name: str,
+        monetary_result: dict,
+        is_significant: bool,
+    ) -> str:
+        """UI-agnostic narrative summary of estimate_monetary_impact_per_variant's output."""
+        point = monetary_result["point_estimate"]
+        low, high = monetary_result["ci_low"], monetary_result["ci_high"]
+        period = monetary_result["projection_period"]
+
+        direction = "gain" if point >= 0 else "loss"
+        qualifier = "" if is_significant else " (not statistically significant -- treat as directional)"
+
+        return (
+            f"Over the next {period} days, '{variant_name}' is projected to produce a "
+            f"{direction} of {point:,.0f} versus the control, with a plausible range of "
+            f"{low:,.0f} to {high:,.0f}{qualifier}."
+        )
+
+    def run_business_case(
+        self,
+        group_stats: dict,
+        control_label: str,
+        unit: AnalysisUnit,
+        daily_visitors: float,
+        visitor_counts: dict | None = None,
+        alpha: float = 0.05,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        projection_period: int = 183,
+        significance_by_variant: dict | None = None,
+    ) -> list[dict]:
+        """
+        Runs estimate_monetary_impact_per_variant for every non-control variant
+        against the control, using per-variant {"mean", "std", "count"} stats
+        (the same shape run_comparison_suite's summary_stats already produces).
+        """
+        ctrl = group_stats[control_label]
+        visitor_counts = visitor_counts or {}
+        significance_by_variant = significance_by_variant or {}
+
+        results = []
+        for label, stats_ in group_stats.items():
+            if label == control_label:
+                continue
+            monetary = self.estimate_monetary_impact_per_variant(
+                mean_ctrl=ctrl["mean"], std_ctrl=ctrl["std"], n_ctrl=int(ctrl["count"]),
+                mean_chal=stats_["mean"], std_chal=stats_["std"], n_chal=int(stats_["count"]),
+                unit=unit,
+                daily_visitors=daily_visitors,
+                visitors_ctrl=visitor_counts.get(control_label),
+                visitors_chal=visitor_counts.get(label),
+                alpha=alpha,
+                alternative=alternative,
+                projection_period=projection_period,
+            )
+            conclusion = self.generate_monetary_conclusion(
+                label, monetary, significance_by_variant.get(label, False),
+            )
+            results.append({"variant": label, "conclusion": conclusion, **monetary})
+
+        return results
