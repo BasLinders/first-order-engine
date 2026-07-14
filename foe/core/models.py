@@ -188,13 +188,42 @@ class ContinuousMetricConfig(BaseModel):
     unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION
     control_label: Optional[str] = Field(
         None,
-        description="Control variant for Gamma post-hoc pairwise comparisons (3+ groups).",
+        description="Control variant for Gamma/Negative-Binomial post-hoc pairwise comparisons (3+ groups).",
     )
     alpha: float = Field(0.05, gt=0.0, lt=1.0, description="Significance threshold.")
+    count_max_unique: int = Field(
+        50,
+        gt=0,
+        description=(
+            "Heuristic path only: a KPI with at most this many distinct "
+            "non-negative-integer values is treated as a discrete count metric "
+            "(e.g. items/tickets per buyer) and routed to Negative Binomial "
+            "regression instead of the normality/variance decision tree."
+        ),
+    )
+    count_max_unique_ratio: float = Field(
+        0.05,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Heuristic path only: a KPI is still treated as a count metric if "
+            "its distinct-value-to-row-count ratio falls below this threshold, "
+            "even when it exceeds count_max_unique (relevant for large datasets "
+            "where a genuine count metric can have many distinct values in "
+            "absolute terms while remaining a tiny fraction of total rows)."
+        ),
+    )
 
 
 class GammaPosthocResult(BaseModel):
-    """A single pairwise Gamma / two-part LRT comparison against the control."""
+    """
+    A single pairwise LRT comparison against the control.
+
+    Shared by both the Gamma/two-part path and the Negative Binomial path --
+    the two are structurally identical (a likelihood ratio test statistic,
+    its p-value, and a Bonferroni-adjusted p-value), so no separate model is
+    needed for the count-data case.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -219,12 +248,16 @@ class ContinuousMetricResult(BaseModel):
     test_name: str
     p_value: float = Field(..., ge=0.0, le=1.0)
     is_significant: bool
-    # Diagnostics are only populated for the heuristic path; None under Gamma.
+    # Diagnostics are only populated for the normality/variance heuristic
+    # branch; None under Gamma and under the Negative Binomial count-data path.
     is_normal: Optional[bool] = None
     is_homogeneous: Optional[bool] = None
     summary_stats: List[Dict[str, Any]] = Field(default_factory=list)
     posthoc_results: Optional[List[GammaPosthocResult]] = None
     conclusion: str = ""
+    # Negative-Binomial dispersion parameter (alpha); populated only when the
+    # heuristic path's count-data gate routes to Negative Binomial regression.
+    dispersion_alpha: Optional[float] = None
     # Non-fatal interpretive notices (e.g. dropped zero rows, no zeros found).
     warnings: List[str] = Field(default_factory=list)
 

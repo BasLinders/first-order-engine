@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from statsmodels.discrete.discrete_model import NegativeBinomial
 from scipy.stats import normaltest, levene, kruskal, mannwhitneyu
 from scipy.optimize import minimize
 from scipy import stats
@@ -25,8 +26,14 @@ class ContinuousMetricEngine:
     Engine for analyzing continuous metrics (Revenue, Profit, Quantity).
 
     Two analysis paths:
-      * Heuristic    -> normality/variance decision tree (ANOVA / Welch /
-                        Kruskal-Wallis / Mann-Whitney).
+      * Heuristic    -> a count-data gate runs first: discrete, non-negative
+                        count KPIs (e.g. items/tickets per buyer) are routed to
+                        Negative Binomial regression regardless of what a
+                        normality test would report, since count data violates
+                        the continuous-data assumptions those tests are built
+                        on. Everything else falls through to the normality/
+                        variance decision tree (ANOVA / Welch / Kruskal-Wallis
+                        / Mann-Whitney).
       * Gamma family -> likelihood-ratio test on fitted distributions. The
                         analysis unit selects the model:
                           - per_transaction: a two-parameter Gamma per variant.
@@ -252,6 +259,142 @@ class ContinuousMetricEngine:
         return posthoc_results
 
     # ------------------------------------------------------------------ #
+    # Negative Binomial fitting (discrete count KPIs)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def is_count_kpi(
+        series, max_unique_for_check: int = 50, max_unique_ratio: float = 0.05,
+    ) -> bool:
+        """
+        Heuristic gate: True if every non-null value is a non-negative integer
+        (or integer-valued float, e.g. 3.0) AND the cardinality looks like a
+        genuine count rather than a continuous KPI that happens to have round
+        values (e.g. revenue rounded to whole currency units).
+
+        Both thresholds are parameters (rather than hardcoded) because what
+        "looks like a count" varies by business context -- a KPI with 40
+        distinct values might be a clear count metric for a low-volume B2B
+        funnel, or a coincidentally-round continuous KPI for a high-volume
+        consumer funnel. Callers should surface both as configurable settings
+        rather than relying on one global default.
+
+        Args:
+            max_unique_for_check: absolute cap on distinct values to still
+                call it a count metric.
+            max_unique_ratio: distinct-values-to-row-count ratio below which
+                the KPI is still treated as a count metric even if it exceeds
+                max_unique_for_check (relevant for large datasets where a
+                genuine count metric can have many distinct values in
+                absolute terms while still being a tiny fraction of rows).
+        """
+        s = pd.Series(series).dropna()
+        if s.empty:
+            return False
+        if (s < 0).any():
+            return False
+        if not np.allclose(s, np.round(s)):
+            return False
+        n_unique = s.nunique()
+        return n_unique <= max_unique_for_check or (n_unique / len(s)) < max_unique_ratio
+
+    @staticmethod
+    def fit_negbin(data, exog: np.ndarray | None = None) -> tuple[float, float, object]:
+        """
+        Fits a Negative Binomial (NB2) model by MLE. If exog is None, fits an
+        intercept-only model. Returns (log_likelihood, alpha, fitted_results).
+
+        alpha is the dispersion parameter statsmodels appends as the last
+        entry of the fitted params vector, regardless of exog width.
+        """
+        arr = np.asarray(data, dtype=float)
+        n = arr.size
+        if exog is None:
+            exog = np.ones((n, 1))
+        model = NegativeBinomial(arr, exog, loglike_method="nb2")
+        try:
+            res = model.fit(disp=0, maxiter=200)
+        except Exception:
+            start = np.zeros(exog.shape[1] + 1)
+            start[0] = np.log(np.mean(arr) + 1e-6)
+            start[-1] = 1.0
+            res = model.fit(disp=0, maxiter=200, start_params=start)
+        return float(res.llf), float(res.params[-1]), res
+
+    @staticmethod
+    def _run_negbin_lrt(work: pd.DataFrame, kpi: str, group_col: str) -> tuple[float, float, float]:
+        """
+        Likelihood Ratio Test comparing a Null NB2 model (single mean, shared
+        across all variants) against an Alternative model (separate mean per
+        variant via group dummies, shared dispersion). Returns
+        (p_value, lr_stat, alpha_estimate).
+
+        Group labels are coerced to str before dummy-encoding so a Categorical
+        dtype carrying unused categories can't inflate the dummy matrix with
+        columns for variants that aren't actually present in `work`.
+        """
+        data = work[kpi].to_numpy(dtype=float)
+        n = data.size
+        dummies = pd.get_dummies(work[group_col].astype(str), drop_first=True).to_numpy(dtype=float)
+
+        exog_null = np.ones((n, 1))
+        ll_null, _, _ = ContinuousMetricEngine.fit_negbin(data, exog_null)
+
+        exog_alt = np.column_stack([np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
+        ll_alt, alpha_alt, _ = ContinuousMetricEngine.fit_negbin(data, exog_alt)
+
+        if not (np.isfinite(ll_null) and np.isfinite(ll_alt)):
+            # Degenerate/tiny samples can fail to converge to a finite
+            # log-likelihood; the caller treats this the same as any other
+            # unfittable model (p=1.0, with a warning) rather than letting a
+            # nan leak into the p_value field's [0, 1] constraint.
+            raise ValueError(
+                "Negative Binomial model did not converge to a finite log-likelihood."
+            )
+
+        df_diff = exog_alt.shape[1] - exog_null.shape[1]
+        if df_diff <= 0:
+            return 1.0, 0.0, alpha_alt
+
+        lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
+        p_value = float(stats.chi2.sf(lr_stat, df=df_diff))
+        return p_value, float(lr_stat), float(alpha_alt)
+
+    @classmethod
+    def run_negbin_posthoc(
+        cls,
+        df: pd.DataFrame,
+        kpi: str,
+        group_col: str,
+        control_label: str,
+        alpha: float = 0.05,
+    ) -> list[GammaPosthocResult]:
+        """Pairwise Negative Binomial LRTs of each treatment against the control, Bonferroni-adjusted."""
+        variants = [v for v in df[group_col].unique() if v != control_label]
+        num_comparisons = len(variants)
+        posthoc_results: list[GammaPosthocResult] = []
+
+        for variant in variants:
+            pair_df = df[df[group_col].isin([control_label, variant])]
+            try:
+                p_val, lrt_stat, _ = cls._run_negbin_lrt(pair_df, kpi, group_col)
+            except Exception:
+                lrt_stat, p_val = 0.0, 1.0
+
+            adj_p = float(min(p_val * num_comparisons, 1.0))
+            posthoc_results.append(
+                GammaPosthocResult(
+                    comparison=f"{variant} vs {control_label}",
+                    lrt_stat=float(lrt_stat),
+                    p_value=float(p_val),
+                    p_adj_bonferroni=adj_p,
+                    is_significant=bool(adj_p < alpha),
+                )
+            )
+
+        return posthoc_results
+
+    # ------------------------------------------------------------------ #
     # Main decision engine
     # ------------------------------------------------------------------ #
 
@@ -319,11 +462,16 @@ class ContinuousMetricEngine:
             )
             is_normal = None
             is_homogeneous = None
+            dispersion_alpha = None
         else:
-            test_name, p_value, is_normal, is_homogeneous = self._run_heuristic_path(
-                work, kpi, group_col, groups, num_groups,
+            (
+                test_name, p_value, is_normal, is_homogeneous, posthoc, dispersion_alpha,
+            ) = self._run_heuristic_path(
+                work, kpi, group_col, groups, num_groups, alpha,
+                config.control_label, warnings,
+                count_max_unique=config.count_max_unique,
+                count_max_unique_ratio=config.count_max_unique_ratio,
             )
-            posthoc = None
 
         p_value = float(min(max(p_value, 0.0), 1.0))
         is_significant = bool(p_value < alpha)
@@ -349,6 +497,7 @@ class ContinuousMetricEngine:
             posthoc_results=posthoc,
             conclusion=conclusion,
             warnings=warnings,
+            dispersion_alpha=dispersion_alpha,
         )
 
     # ------------------------------------------------------------------ #
@@ -400,8 +549,25 @@ class ContinuousMetricEngine:
         )
 
     def _run_heuristic_path(
-        self, work, kpi, group_col, groups, num_groups,
-    ) -> tuple[str, float, bool, bool]:
+        self, work, kpi, group_col, groups, num_groups, alpha,
+        control_label, warnings,
+        count_max_unique: int = 50,
+        count_max_unique_ratio: float = 0.05,
+    ) -> tuple[str, float, bool | None, bool | None, list[GammaPosthocResult] | None, float | None]:
+        # Count-data gate runs first: a discrete, non-negative count KPI
+        # (e.g. items/tickets per buyer) violates the continuous-data
+        # assumptions the normality/variance tree below is built on, no
+        # matter what a normality test reports on a large sample.
+        if self.is_count_kpi(
+            work[kpi],
+            max_unique_for_check=count_max_unique,
+            max_unique_ratio=count_max_unique_ratio,
+        ):
+            test_name, p_value, posthoc, dispersion_alpha = self._run_negbin_path(
+                work, kpi, group_col, num_groups, alpha, control_label, warnings,
+            )
+            return test_name, p_value, None, None, posthoc, dispersion_alpha
+
         model = smf.ols(f"{kpi} ~ C({group_col})", data=work).fit()
 
         # Normality of residuals via D'Agostino's K^2 omnibus test (skewness +
@@ -421,19 +587,50 @@ class ContinuousMetricEngine:
 
         if is_normal and is_homogeneous:
             anova_results = sm.stats.anova_lm(model, typ=2)
-            return "Standard ANOVA", float(anova_results["PR(>F)"].iloc[0]), is_normal, is_homogeneous
+            return (
+                "Standard ANOVA", float(anova_results["PR(>F)"].iloc[0]),
+                is_normal, is_homogeneous, None, None,
+            )
 
         if is_normal and not is_homogeneous:
             aov = welch_anova(data=work, dv=kpi, between=group_col)
-            return "Welch's ANOVA", float(aov["p-unc"].iloc[0]), is_normal, is_homogeneous
+            return (
+                "Welch's ANOVA", float(aov["p_unc"].iloc[0]),
+                is_normal, is_homogeneous, None, None,
+            )
 
         # Non-normal -> non-parametric.
         if num_groups > 2:
             _, p = kruskal(*groups)
-            return "Kruskal-Wallis", float(p), is_normal, is_homogeneous
+            return "Kruskal-Wallis", float(p), is_normal, is_homogeneous, None, None
 
         _, p = mannwhitneyu(groups[0], groups[1], alternative="two-sided")
-        return "Mann-Whitney U", float(p), is_normal, is_homogeneous
+        return "Mann-Whitney U", float(p), is_normal, is_homogeneous, None, None
+
+    def _run_negbin_path(
+        self, work, kpi, group_col, num_groups, alpha, control_label, warnings,
+    ) -> tuple[str, float, list[GammaPosthocResult] | None, float | None]:
+        test_name = "Negative Binomial Regression (LRT)"
+        try:
+            p_value, _, dispersion_alpha = self._run_negbin_lrt(work, kpi, group_col)
+        except Exception:
+            warnings.append(
+                "The Negative Binomial model could not be fit on all groups; "
+                "the global test was treated as non-significant."
+            )
+            return test_name, 1.0, None, None
+
+        posthoc = None
+        if p_value < alpha and num_groups > 2:
+            if control_label:
+                posthoc = self.run_negbin_posthoc(work, kpi, group_col, control_label, alpha)
+            else:
+                warnings.append(
+                    "Global Negative Binomial test is significant with 3+ groups, "
+                    "but no control_label was provided for post-hoc comparisons."
+                )
+
+        return test_name, p_value, posthoc, dispersion_alpha
 
     # ------------------------------------------------------------------ #
     # Business case (user-level monetary projection)
