@@ -5,11 +5,17 @@ from typing import Dict, Any, Optional
 from foe.core.models import AnalysisUnit
 
 
-class ForecastingEngine:
+class TrafficForecastingEngine:
     """
     Handles time-series forecasting for A/B testing traffic and metrics.
     Isolated from the core engine to manage heavy dependencies (Prophet/Stan);
     imports only pandas, Prophet, and the lightweight AnalysisUnit enum.
+
+    Named distinctly from foe.forecasting.operations.ForecastingEngine: this
+    class produces the daily count/value projections that feed pre-test MDE
+    planning (PretestEngine.calculate_mde_from_forecast), while the sibling
+    engine forecasts conversions/revenue with holidays, covariates, and
+    growth/seasonality controls for post-hoc business forecasting.
     """
 
     @staticmethod
