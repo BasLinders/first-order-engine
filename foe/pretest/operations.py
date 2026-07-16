@@ -470,7 +470,7 @@ class PretestEngine:
         }
 
     # ------------------------------------------------------------------ #
-    # Seasonal MDE (consumes ForecastingEngine output)
+    # Seasonal MDE (consumes TrafficForecastingEngine output)
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -484,7 +484,7 @@ class PretestEngine:
         kpi_cv: Optional[float] = None,
         unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION,
     ) -> Dict[str, Any]:
-        """Seasonal 6-week MDE from forecast records (see ForecastingEngine).
+        """Seasonal 6-week MDE from forecast records (see TrafficForecastingEngine).
 
         Each record must carry ``pred_count`` (forecasted unit count) and
         ``pred_value`` (forecasted sum-of-metric), sorted by date. The per-unit

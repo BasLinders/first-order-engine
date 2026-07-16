@@ -301,3 +301,193 @@ class SequentialConfig(BaseModel):
     num_variants: int = Field(1, ge=1)
     max_visitors: int = Field(10000, gt=0)
     p0: Optional[float] = Field(None, description="Base rate for one-sample tests")
+
+
+# --- Forecasting ---
+
+
+class ForecastGranularity(str, Enum):
+    """Resampling frequency applied to the data before Prophet ever sees it."""
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+class GrowthMode(str, Enum):
+    """
+    Prophet's trend curve. LOGISTIC is an available option, not a default:
+    it requires a concrete capacity ceiling (`cap`) and should only be used
+    when one genuinely exists (e.g. a venue's physical capacity).
+    """
+
+    LINEAR = "linear"
+    LOGISTIC = "logistic"
+
+
+class SeasonalityMode(str, Enum):
+    """
+    ADDITIVE: seasonal swings stay a constant absolute size regardless of
+    trend. MULTIPLICATIVE: seasonal swings scale with the trend (e.g. a
+    growing business's summer peak grows too).
+    """
+
+    ADDITIVE = "additive"
+    MULTIPLICATIVE = "multiplicative"
+
+
+class CustomHoliday(BaseModel):
+    """
+    A single user-defined holiday or event row, merged with any other
+    custom rows into the one dataframe Prophet expects via its `holidays`
+    parameter. Lets Prophet treat this date as an exception to normal
+    seasonality (e.g. a park's own event day, a closure, a promotion).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    holiday: str = Field(..., min_length=1, description="Name of the holiday/event.")
+    ds: date
+    lower_window: int = Field(
+        0, le=0, description="Days before `ds` also treated as part of the event (<= 0)."
+    )
+    upper_window: int = Field(
+        0, ge=0, description="Days after `ds` also treated as part of the event (>= 0)."
+    )
+
+
+class ForecastingEngineConfig(BaseModel):
+    """
+    Settings envelope for ForecastingEngine.fit(). Fully validated at
+    construction time so a caller building this from a UI form gets
+    immediate, specific feedback instead of a failure deep inside Prophet.
+
+    The row-level history itself is passed to the engine as a
+    ``pandas.DataFrame``, not through this model, for the same reason as
+    ContinuousMetricConfig: it is the wrong shape for a JSON settings
+    contract.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    date_col: str = Field(..., description="Name of the date column in the input data.")
+    conversions_col: Optional[str] = Field(
+        None, description="Column to forecast as 'conversions'."
+    )
+    revenue_col: Optional[str] = Field(
+        None, description="Column to forecast as 'revenue'."
+    )
+
+    granularity: ForecastGranularity = ForecastGranularity.DAILY
+    periods: int = Field(
+        ...,
+        gt=0,
+        description="Future steps to forecast, in the chosen granularity's units.",
+    )
+
+    growth: GrowthMode = GrowthMode.LINEAR
+    cap: Optional[float] = Field(
+        None, description="Required saturating maximum when growth='logistic'."
+    )
+    floor: Optional[float] = Field(
+        None, description="Optional saturating minimum when growth='logistic'."
+    )
+
+    seasonality_mode: SeasonalityMode = SeasonalityMode.MULTIPLICATIVE
+
+    holidays: List[CustomHoliday] = Field(
+        default_factory=list,
+        description="Custom holidays/events merged into Prophet's holidays dataframe.",
+    )
+
+    regressors: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Column names in the input data to add as Prophet regressors. "
+            "Fully opt-in -- nothing is added automatically, including weather."
+        ),
+    )
+
+    interval_width: float = Field(0.95, gt=0.0, lt=1.0)
+
+    cv_horizon_periods: Optional[int] = Field(
+        None,
+        gt=0,
+        description=(
+            "Cross-validation horizon, in the chosen granularity's units. "
+            "Defaults to `periods` when omitted; cross-validation is skipped "
+            "entirely (not run and not faked) when history is too short for "
+            "it to mean anything."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def check_targets_and_growth(self) -> "ForecastingEngineConfig":
+        if not self.conversions_col and not self.revenue_col:
+            raise ValueError(
+                "At least one of conversions_col or revenue_col must be set."
+            )
+        if self.conversions_col and self.conversions_col == self.revenue_col:
+            raise ValueError("conversions_col and revenue_col must be different columns.")
+        if self.growth == GrowthMode.LOGISTIC:
+            if self.cap is None:
+                raise ValueError("cap is required when growth='logistic'.")
+            if self.floor is not None and self.floor >= self.cap:
+                raise ValueError(f"floor ({self.floor}) must be less than cap ({self.cap}).")
+        return self
+
+
+class ForecastPoint(BaseModel):
+    """One row of a Prophet forecast, JSON-serializable."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ds: date
+    yhat: float
+    yhat_lower: float
+    yhat_upper: float
+
+
+class ForecastCVMetrics(BaseModel):
+    """Aggregate cross-validation metrics (Prophet's performance_metrics, averaged across cutoffs)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mape: float = Field(..., ge=0.0)
+    rmse: float = Field(..., ge=0.0)
+    horizon_periods: int = Field(..., gt=0)
+
+
+class SingleTargetForecast(BaseModel):
+    """Forecast output for one target series (conversions or revenue)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target: str
+    forecast: List[ForecastPoint]
+    components: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description=(
+            "Component breakdown records (trend/seasonalities/holidays/"
+            "regressors), keyed by component name, for the 'why' behind "
+            "the forecast shape."
+        ),
+    )
+    cv_metrics: Optional[ForecastCVMetrics] = None
+    warnings: List[str] = Field(default_factory=list)
+    conclusion: str = ""
+
+
+class ForecastingResult(BaseModel):
+    """
+    Standardized output of ForecastingEngine.fit(). Holds one
+    SingleTargetForecast per requested target: conversions and revenue are
+    fit as two independent Prophet models rather than one derived from the
+    other (see foe.forecasting.operations module docstring for why).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    granularity: ForecastGranularity
+    targets: Dict[str, SingleTargetForecast]
+    conclusion: str

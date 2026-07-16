@@ -68,7 +68,9 @@ first-order-engine/
 │   │   └── operations.py        # SequentialEngine (LLR bounds, trajectory processing)
 │   ├── pretest/
 │   │   ├── operations.py        # PretestEngine (sample size, MDE)
-│   │   └── forecasting.py       # Prophet-based traffic forecasting
+│   │   └── forecasting.py       # TrafficForecastingEngine: Prophet-based traffic forecasting
+│   ├── forecasting/
+│   │   └── operations.py        # ForecastingEngine (conversions/revenue, holidays, covariates)
 │   ├── srm/
 │   │   └── operations.py        # SRMEngine (chi-squared traffic checks)
 │   ├── interaction/
