@@ -278,3 +278,42 @@ class VizEngine:
             "chart_data": means.to_dict(orient="records"),
             "chart_caption": f"Average {kpi} broken down by Variant and {segment_column}."
         }
+
+    # --- Forecasting ---
+
+    @staticmethod
+    def get_forecasting_chart_data(
+        history: pd.DataFrame, result, target: str
+    ) -> Dict[str, Any]:
+        """
+        Formats a SingleTargetForecast (foe.core.models, from
+        ForecastingEngine.fit()) for a historical-vs-forecast chart: actual
+        history, the yhat central line, and the uncertainty band as a
+        separate series so it isn't mistaken for a second forecast line.
+
+        Args:
+            history: Resampled history with a `ds` column and a `y` column
+                (the raw target values ForecastingEngine fit on).
+            result:  A SingleTargetForecast.
+            target:  Label used in `chart_caption` (e.g. "conversions").
+        """
+        hist = history[["ds", "y"]].copy()
+        hist["ds"] = pd.to_datetime(hist["ds"]).dt.strftime("%Y-%m-%d")
+
+        forecast_records = [
+            {"ds": p.ds.isoformat(), "yhat": p.yhat} for p in result.forecast
+        ]
+        expected_range = [
+            {"ds": p.ds.isoformat(), "yhat_lower": p.yhat_lower, "yhat_upper": p.yhat_upper}
+            for p in result.forecast
+        ]
+
+        return {
+            "history": hist.to_dict(orient="records"),
+            "forecast": forecast_records,
+            "expected_range": expected_range,
+            "chart_caption": (
+                f"Forecast for {target}: the line is the central forecast, "
+                "the shaded band is the expected range."
+            ),
+        }

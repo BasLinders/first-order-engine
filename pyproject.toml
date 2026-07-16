@@ -53,6 +53,7 @@ addopts = "--cov=foe"
 [tool.coverage.run]
 omit = [
     "foe/behavioral/*",
+    "foe/forecasting/*",
     "foe/interaction/*",
     "foe/pretest/*",
     "foe/sequential/*",
