@@ -268,6 +268,62 @@ class PretestEngine:
             "conclusion": cls.generate_mde_table_conclusion(results),
         }
 
+    @classmethod
+    def calculate_mde_table_rpv(
+        cls,
+        num_variants: int,
+        weekly_visitors: int,
+        conversion_rate: float,
+        txn_mean: float,
+        txn_variance: float,
+        risk_pct: float,
+        trust_pct: float,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+    ) -> Dict[str, Any]:
+        """Calculates a 6-week MDE projection for revenue-per-visitor (RPV).
+
+        RPV is a zero-inflated compound metric (Bernoulli(convert) x spend),
+        not a plain continuous one - non-buyers contribute a real 0 to the
+        per-visitor distribution, which inflates its variance beyond what the
+        buyer-only spend variance would suggest. Feeding a buyer-only
+        mean/variance straight into ``calculate_mde_table_continuous`` skips
+        that inflation and understates the true per-visitor variance, making
+        the MDE look more optimistic than it is.
+
+        `weekly_visitors` is total weekly traffic across all variants.
+        `conversion_rate`, `txn_mean` and `txn_variance` describe the
+        per-transaction (buyer-only) distribution - e.g. from a raw sample of
+        order values/counts, or from a Gamma/Negative-Binomial fit over that
+        sample. This method converts them to per-visitor moments via
+        ``compound_per_visitor_moments`` before delegating to
+        ``calculate_mde_table_continuous``.
+        """
+        if (
+            weekly_visitors <= 0
+            or not (0 < conversion_rate <= 1)
+            or txn_mean <= 0
+            or txn_variance <= 0
+        ):
+            return {
+                "table": [],
+                "conclusion": (
+                    "Invalid baseline data (need visitors > 0, "
+                    "0 < conversion rate <= 1, transaction mean/variance > 0)."
+                ),
+            }
+
+        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        return cls.calculate_mde_table_continuous(
+            num_variants=num_variants,
+            weekly_units=weekly_visitors,
+            mean=mean,
+            variance=variance,
+            risk_pct=risk_pct,
+            trust_pct=trust_pct,
+            alternative=alternative,
+            unit=AnalysisUnit.PER_VISITOR,
+        )
+
     # ------------------------------------------------------------------ #
     # Sample size
     # ------------------------------------------------------------------ #
@@ -375,6 +431,55 @@ class PretestEngine:
             ),
         }
 
+    @classmethod
+    def calculate_fixed_sample_size_rpv(
+        cls,
+        conversion_rate: float,
+        txn_mean: float,
+        txn_variance: float,
+        mde_relative: float,
+        num_variants: int,
+        alpha: float = 0.05,
+        power: float = 0.80,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
+    ) -> Dict[str, Any]:
+        """Required sample size per variant (in visitors) for revenue-per-visitor (RPV).
+
+        See ``calculate_mde_table_rpv`` for why RPV needs the compound
+        (Bernoulli x spend) moments rather than the buyer-only spend
+        mean/variance. `mde_relative` is the relative lift in RPV itself
+        (mean = conversion_rate * txn_mean), not in the underlying spend or
+        conversion rate individually.
+        """
+        if (
+            not (0 < conversion_rate <= 1)
+            or txn_mean <= 0
+            or txn_variance <= 0
+            or mde_relative <= 0
+        ):
+            return {
+                "n_per_variant": 0,
+                "total_n": 0,
+                "conclusion": (
+                    "Invalid inputs (need 0 < conversion rate <= 1, "
+                    "transaction mean/variance > 0, mde_relative > 0)."
+                ),
+            }
+
+        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        return cls.calculate_fixed_sample_size_continuous(
+            mean=mean,
+            variance=variance,
+            mde_relative=mde_relative,
+            num_variants=num_variants,
+            alpha=alpha,
+            power=power,
+            alternative=alternative,
+            variance_scaling=variance_scaling,
+            unit=AnalysisUnit.PER_VISITOR,
+        )
+
     # ------------------------------------------------------------------ #
     # Power
     # ------------------------------------------------------------------ #
@@ -468,6 +573,49 @@ class PretestEngine:
                 power, target_power, expected_lift, unit_noun
             ),
         }
+
+    @classmethod
+    def calculate_power_rpv(
+        cls,
+        conversion_rate: float,
+        txn_mean: float,
+        txn_variance: float,
+        expected_lift: float,
+        n_per_variant: int,
+        num_variants: int,
+        alpha: float = 0.05,
+        target_power: float = 0.80,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
+    ) -> Dict[str, Any]:
+        """Probability of detecting a relative `expected_lift` in RPV.
+
+        `expected_lift` applies to RPV itself (mean = conversion_rate *
+        txn_mean), not to conversion rate or transaction value individually.
+        See ``calculate_mde_table_rpv`` for why the compound moments matter.
+        """
+        if (
+            not (0 < conversion_rate <= 1)
+            or txn_mean <= 0
+            or txn_variance <= 0
+            or expected_lift <= 0
+            or n_per_variant <= 0
+        ):
+            return {"power": 0.0, "conclusion": "Invalid inputs."}
+
+        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        return cls.calculate_power_continuous(
+            mean=mean,
+            variance=variance,
+            expected_lift=expected_lift,
+            n_per_variant=n_per_variant,
+            num_variants=num_variants,
+            alpha=alpha,
+            target_power=target_power,
+            alternative=alternative,
+            variance_scaling=variance_scaling,
+            unit=AnalysisUnit.PER_VISITOR,
+        )
 
     # ------------------------------------------------------------------ #
     # Seasonal MDE (consumes TrafficForecastingEngine output)
