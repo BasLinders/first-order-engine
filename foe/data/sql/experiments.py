@@ -1,0 +1,1637 @@
+"""
+foe/data/sql/experiments.py
+
+SQL builders for the experiment-extraction modes (baseline, binomial,
+continuous, sequential, interaction) plus auto-detect probes. Ported from
+hexkit's utility/sql_builder.py -- see that module's history for the
+reasoning behind each shape. The port changes three things: params are now
+Pydantic models nested under `connection`/`date_range` (foe.core.models)
+instead of flat dataclasses; string literals interpolated into SQL are
+escaped via foe.data.sql.ga4.escape_literal; and match_strategy/filter_type
+are proper Enums rather than Literal strings (both compare equal to their
+string values, so no call-site changes were otherwise needed).
+
+Every build_* function returns a complete SQL string ready to hand to
+DataEngine.run()/dry_run()/preview() -- no framework or BigQuery-client
+code lives here.
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Tuple
+
+from foe.core.models import (
+    BinomialExtractionParams,
+    ContinuousExtractionParams,
+    ContinuousQueryMode,
+    ExperimentDefinition,
+    InteractionExtractionParams,
+    MatchStrategy,
+    SequentialExtractionParams,
+    UserFilterType,
+    BaselineExtractionParams,
+    BaselineOutputShape,
+    BaselineOutputType,
+)
+from .ga4 import escape_literal, escape_raw_string_literal, suffix_filter, table_ref, validate_table_ref
+
+_esc = escape_literal
+_esc_re = escape_raw_string_literal
+
+
+# ---------------------------------------------------------------------------
+# BASELINE
+# ---------------------------------------------------------------------------
+
+def _baseline_user_filter(p: BaselineExtractionParams, table: str, suffix: str) -> Tuple[str, str]:
+    """
+    Builds the optional user-filter CTE + join clause shared by all baseline
+    shapes. CONTAINS/REGEX scope to users who visited a matching page_view
+    URL; EVENT scopes to users who fired a specific event at least once
+    during the date range -- more robust than a URL match whenever the URL
+    itself can't differentiate page types.
+    """
+    if not (p.filter_type and p.filter_value):
+        return "", ""
+    if p.filter_type == UserFilterType.EVENT:
+        cte = f"""
+filtered_users AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = '{_esc(p.filter_value)}'
+),"""
+    else:
+        if p.filter_type == UserFilterType.REGEX:
+            page_condition = f"AND REGEXP_CONTAINS(params.value.string_value, r'{_esc_re(p.filter_value)}')"
+        else:
+            page_condition = f"AND params.value.string_value LIKE '%{_esc(p.filter_value)}%'"
+        cte = f"""
+filtered_users AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM {table}, UNNEST(event_params) AS params
+  WHERE {suffix}
+    AND event_name = 'page_view'
+    AND params.key = 'page_location'
+    {page_condition}
+),"""
+    join = "INNER JOIN filtered_users ON main.user_pseudo_id = filtered_users.user_pseudo_id"
+    return cte, join
+
+
+def build_baseline(p: BaselineExtractionParams, limit: int = 0) -> str:
+    if p.output_shape == BaselineOutputShape.DAILY:
+        return _build_baseline_daily(p, limit)
+    if p.output_shape == BaselineOutputShape.PER_USER:
+        return _build_baseline_per_user(p, limit)
+    return _build_baseline_aggregate(p, limit)
+
+
+def _build_baseline_aggregate(p: BaselineExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    if p.output_type == BaselineOutputType.REVENUE:
+        select_cols = """
+  -- All devices
+  COUNT(DISTINCT main.user_pseudo_id) AS total_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.transaction_id END) AS total_transactions,
+  SUM(CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.purchase_revenue ELSE 0 END) AS total_purchase_revenue,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT main.user_pseudo_id), 0), 2) AS total_revenue_per_visitor,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.transaction_id END), 0), 2) AS total_average_order_value,
+  -- Mobile
+  COUNT(DISTINCT CASE WHEN main.device.category = 'mobile' THEN main.user_pseudo_id END) AS mobile_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.ecommerce.transaction_id END) AS mobile_transactions,
+  SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.ecommerce.purchase_revenue ELSE 0 END) AS mobile_purchase_revenue,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN main.device.category = 'mobile' THEN main.user_pseudo_id END), 0), 2) AS mobile_revenue_per_visitor,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.ecommerce.transaction_id END), 0), 2) AS mobile_average_order_value,
+  -- Desktop
+  COUNT(DISTINCT CASE WHEN main.device.category = 'desktop' THEN main.user_pseudo_id END) AS desktop_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.ecommerce.transaction_id END) AS desktop_transactions,
+  SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.ecommerce.purchase_revenue ELSE 0 END) AS desktop_purchase_revenue,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN main.device.category = 'desktop' THEN main.user_pseudo_id END), 0), 2) AS desktop_revenue_per_visitor,
+  ROUND(SUM(CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.ecommerce.purchase_revenue ELSE 0 END) / NULLIF(COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.ecommerce.transaction_id END), 0), 2) AS desktop_average_order_value"""
+    else:
+        select_cols = """
+  -- All devices
+  COUNT(DISTINCT main.user_pseudo_id) AS total_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' THEN main.user_pseudo_id END) AS total_conversions,
+  -- Mobile
+  COUNT(DISTINCT CASE WHEN main.device.category = 'mobile' THEN main.user_pseudo_id END) AS mobile_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'mobile' THEN main.user_pseudo_id END) AS mobile_conversions,
+  -- Desktop
+  COUNT(DISTINCT CASE WHEN main.device.category = 'desktop' THEN main.user_pseudo_id END) AS desktop_visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' AND main.device.category = 'desktop' THEN main.user_pseudo_id END) AS desktop_conversions"""
+        if p.kpi_add_to_cart:
+            select_cols += """,
+  -- Add to cart (all devices / mobile / desktop)
+  COUNT(DISTINCT CASE WHEN main.event_name = 'add_to_cart' THEN main.user_pseudo_id END) AS total_add_to_cart_conversions,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'add_to_cart' AND main.device.category = 'mobile' THEN main.user_pseudo_id END) AS mobile_add_to_cart_conversions,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'add_to_cart' AND main.device.category = 'desktop' THEN main.user_pseudo_id END) AS desktop_add_to_cart_conversions"""
+
+    return f"""-- Baseline export ({p.output_type.value}, aggregate) — sample size preparation
+DECLARE start_date STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date   STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+
+WITH{user_filter_cte}
+dummy AS (SELECT 1)  -- placeholder when no user filter
+
+SELECT{select_cols}
+FROM {table} AS main
+{join_clause}
+WHERE main.{suffix}{limit_clause};
+"""
+
+
+def _build_baseline_daily(p: BaselineExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    if p.output_type == BaselineOutputType.REVENUE:
+        select_cols = """
+  PARSE_DATE('%Y%m%d', main.event_date) AS report_date,
+  COUNT(DISTINCT main.user_pseudo_id) AS visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.transaction_id END) AS transactions,
+  SUM(CASE WHEN main.event_name = 'purchase' THEN main.ecommerce.purchase_revenue ELSE 0 END) AS purchase_revenue"""
+    else:
+        select_cols = """
+  PARSE_DATE('%Y%m%d', main.event_date) AS report_date,
+  COUNT(DISTINCT main.user_pseudo_id) AS visitors,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'purchase' THEN main.user_pseudo_id END) AS conversions"""
+        if p.kpi_add_to_cart:
+            select_cols += """,
+  COUNT(DISTINCT CASE WHEN main.event_name = 'add_to_cart' THEN main.user_pseudo_id END) AS add_to_cart_conversions"""
+
+    return f"""-- Baseline export ({p.output_type.value}, daily rows) — sample size preparation
+DECLARE start_date STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date   STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+
+WITH{user_filter_cte}
+dummy AS (SELECT 1)  -- placeholder when no user filter
+
+SELECT{select_cols}
+FROM {table} AS main
+{join_clause}
+WHERE main.{suffix}
+GROUP BY report_date
+ORDER BY report_date{limit_clause};
+"""
+
+
+def _build_baseline_per_user(p: BaselineExtractionParams, limit: int = 0) -> str:
+    """One row per completed order -- for fitting a distribution (e.g. Negative
+    Binomial or Gamma) from raw data in PretestEngine's continuous-KPI mode.
+    Revenue-only: a binomial baseline has no per-order raw value to fit."""
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    return f"""-- Baseline export (revenue, per-order raw values) — sample size preparation
+DECLARE start_date STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date   STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+
+WITH{user_filter_cte}
+dummy AS (SELECT 1)  -- placeholder when no user filter
+
+SELECT
+  main.user_pseudo_id AS user_pseudo_id,
+  main.ecommerce.transaction_id AS transaction_id,
+  main.ecommerce.purchase_revenue AS purchase_revenue,
+  main.ecommerce.total_item_quantity AS total_item_quantity
+FROM {table} AS main
+{join_clause}
+WHERE main.{suffix}
+  AND main.event_name = 'purchase'
+  AND main.ecommerce.purchase_revenue IS NOT NULL
+  AND main.ecommerce.purchase_revenue <> 0.0{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# BINOMIAL
+# ---------------------------------------------------------------------------
+
+def _variant_case_block(
+    exp: ExperimentDefinition, strategy: MatchStrategy, source_col: str = "params.value.string_value"
+) -> str:
+    """Builds the CASE WHEN block mapping variant strings to labels."""
+    lines = []
+    for v in exp.variants:
+        if strategy == MatchStrategy.EXACT:
+            lines.append(f"      WHEN {source_col} = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+        else:
+            lines.append(f"      WHEN {source_col} LIKE '%{_esc(v.string)}%' THEN '{_esc(v.label)}'")
+    return "\n".join(lines)
+
+
+def build_binomial(p: BinomialExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix_e = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat(), alias="e")
+    exp = p.experiments[0]
+
+    all_variant_strings = [v.string for v in exp.variants]
+    variant_in_list = ", ".join(f"'{_esc(s)}'" for s in all_variant_strings)
+
+    if p.match_strategy == MatchStrategy.LIKE:
+        exp_filter = f"AND params.value.string_value LIKE '%{_esc(exp.prefix)}%'"
+    else:
+        exp_filter = f"AND params.value.string_value IN ({variant_in_list})"
+
+    # CASE WHEN in variant_data operates on exp_variant_string (extracted from
+    # user_initial_exposure), not directly on params.value.string_value.
+    case_block = _variant_case_block(exp, p.match_strategy, source_col="exp_variant_string")
+
+    # -----------------------------------------------------------------------
+    # Exposure CTEs
+    # Always use user_initial_exposure + ROW_NUMBER to guarantee one row per
+    # user (deduplicates repeated exposures, preventing fan-out in downstream
+    # joins). When post_exposure_filter is on, first_exposure_timestamp is
+    # carried into variant_data so event CTEs can filter against it.
+    # -----------------------------------------------------------------------
+    ts_col = "event_timestamp AS first_exposure_timestamp," if p.post_exposure_filter else ""
+
+    exposure_ctes = f"""
+user_initial_exposure AS (
+  SELECT
+    user_pseudo_id,
+    params.value.string_value AS exp_variant_string,
+    event_timestamp,
+    ROW_NUMBER() OVER (
+      PARTITION BY user_pseudo_id
+      ORDER BY event_timestamp ASC
+    ) AS rn
+  FROM {table}, UNNEST(event_params) AS params
+  WHERE {suffix}
+    AND params.key = '{_esc(p.param_key)}'
+    AND params.value.string_value IS NOT NULL
+    {exp_filter}
+),
+
+variant_data AS (
+  SELECT
+    user_pseudo_id AS variant_user_pseudo_id,
+    {ts_col}
+    CASE
+{case_block}
+      ELSE 'Other'
+    END AS experience_variant_label
+  FROM user_initial_exposure
+  WHERE rn = 1
+),
+"""
+
+    # -----------------------------------------------------------------------
+    # Conditional CTEs -- ecommerce, device, optional KPIs
+    # When post_exposure_filter is on: event CTEs join variant_data to filter
+    # purchases/events to those occurring after first exposure.
+    # device_data is exempt -- device category is a user attribute, not a
+    # timestamped event.
+    # -----------------------------------------------------------------------
+    ecommerce_cte = ""
+    ecommerce_join = ""
+    device_cte = ""
+    device_join = ""
+    optional_ctes = ""
+    optional_joins = ""
+
+    need_ecommerce = p.kpi_transactions or p.kpi_aov
+
+    if need_ecommerce:
+        if p.post_exposure_filter:
+            ecommerce_cte = f"""
+ecommerce_data AS (
+  SELECT
+    e.user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(e.ecommerce.purchase_revenue)          AS purchase_revenue,
+    COUNT(DISTINCT e.ecommerce.transaction_id) AS transaction_id
+  FROM {table} e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE {suffix_e}
+    AND e.event_name = 'purchase'
+    AND e.user_pseudo_id IS NOT NULL
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id
+),
+"""
+        else:
+            ecommerce_cte = f"""
+ecommerce_data AS (
+  SELECT
+    user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(ecommerce.purchase_revenue)          AS purchase_revenue,
+    COUNT(DISTINCT ecommerce.transaction_id) AS transaction_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'purchase'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY user_pseudo_id
+),
+"""
+        ecommerce_join = "  LEFT JOIN ecommerce_data ed ON vd.variant_user_pseudo_id = ed.ecommerce_user_pseudo_id\n"
+
+    if p.kpi_device_split:
+        # Device is a user attribute -- no post-exposure filter applied.
+        device_cte = f"""
+device_data AS (
+  SELECT
+    user_pseudo_id AS device_user_pseudo_id,
+    MAX(CASE WHEN device.category = 'mobile'  THEN 1 ELSE 0 END) AS is_mobile_user,
+    MAX(CASE WHEN device.category = 'desktop' THEN 1 ELSE 0 END) AS is_desktop_user
+  FROM {table}
+  WHERE {suffix}
+  GROUP BY user_pseudo_id
+),
+"""
+        device_join = "  LEFT JOIN device_data dd ON vd.variant_user_pseudo_id = dd.device_user_pseudo_id\n"
+
+    if p.kpi_add_to_cart:
+        if p.post_exposure_filter:
+            optional_ctes += f"""
+add_to_cart_data AS (
+  SELECT e.user_pseudo_id AS atc_user_pseudo_id
+  FROM {table} e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE {suffix_e}
+    AND e.event_name = 'add_to_cart'
+    AND e.user_pseudo_id IS NOT NULL
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id
+),
+"""
+        else:
+            optional_ctes += f"""
+add_to_cart_data AS (
+  SELECT user_pseudo_id AS atc_user_pseudo_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'add_to_cart'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY user_pseudo_id
+),
+"""
+        optional_joins += "  LEFT JOIN add_to_cart_data atc ON vd.variant_user_pseudo_id = atc.atc_user_pseudo_id\n"
+
+    if p.kpi_login:
+        if p.post_exposure_filter:
+            optional_ctes += f"""
+login_data AS (
+  SELECT e.user_pseudo_id AS login_user_pseudo_id, 1 AS has_logged_in
+  FROM {table} e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id,
+  UNNEST(e.event_params) AS ep
+  WHERE {suffix_e}
+    AND e.event_name = 'page_view'
+    AND ep.key = 'page_location'
+    AND ep.value.string_value LIKE '%/customer/account/login%'
+    AND e.user_pseudo_id IS NOT NULL
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY 1
+),
+"""
+        else:
+            optional_ctes += f"""
+login_data AS (
+  SELECT user_pseudo_id AS login_user_pseudo_id, 1 AS has_logged_in
+  FROM {table}, UNNEST(event_params) AS ep
+  WHERE {suffix}
+    AND event_name = 'page_view'
+    AND ep.key = 'page_location'
+    AND ep.value.string_value LIKE '%/customer/account/login%'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY 1
+),
+"""
+        optional_joins += "  LEFT JOIN login_data ld ON vd.variant_user_pseudo_id = ld.login_user_pseudo_id\n"
+
+    if p.kpi_create_account:
+        if p.post_exposure_filter:
+            optional_ctes += f"""
+create_account_data AS (
+  SELECT e.user_pseudo_id AS create_user_pseudo_id, 1 AS has_created_account
+  FROM {table} e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id,
+  UNNEST(e.event_params) AS ep
+  WHERE {suffix_e}
+    AND e.event_name = 'page_view'
+    AND ep.key = 'page_location'
+    AND ep.value.string_value LIKE '%/customer/account/register%'
+    AND e.user_pseudo_id IS NOT NULL
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY 1
+),
+"""
+        else:
+            optional_ctes += f"""
+create_account_data AS (
+  SELECT user_pseudo_id AS create_user_pseudo_id, 1 AS has_created_account
+  FROM {table}, UNNEST(event_params) AS ep
+  WHERE {suffix}
+    AND event_name = 'page_view'
+    AND ep.key = 'page_location'
+    AND ep.value.string_value LIKE '%/customer/account/register%'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY 1
+),
+"""
+        optional_joins += "  LEFT JOIN create_account_data cd ON vd.variant_user_pseudo_id = cd.create_user_pseudo_id\n"
+
+    if p.kpi_ideal:
+        if p.post_exposure_filter:
+            optional_ctes += f"""
+ideal_users AS (
+  SELECT DISTINCT e.user_pseudo_id
+  FROM {table} e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id,
+  UNNEST(e.event_params) AS params
+  WHERE {suffix_e}
+    AND e.event_name = 'add_payment_info'
+    AND params.key = 'payment_type'
+    AND params.value.string_value LIKE '%iDEAL%'
+    AND e.user_pseudo_id IS NOT NULL
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+),
+"""
+        else:
+            optional_ctes += f"""
+ideal_users AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM {table}, UNNEST(event_params) AS params
+  WHERE {suffix}
+    AND event_name = 'add_payment_info'
+    AND params.key = 'payment_type'
+    AND params.value.string_value LIKE '%iDEAL%'
+    AND user_pseudo_id IS NOT NULL
+),
+"""
+        optional_joins += "  LEFT JOIN ideal_users iu ON vd.variant_user_pseudo_id = iu.user_pseudo_id\n"
+
+    # -----------------------------------------------------------------------
+    # final_data SELECT list -- only include columns whose CTEs are present.
+    # -----------------------------------------------------------------------
+    final_cols = [
+        "    vd.variant_user_pseudo_id",
+        "    vd.experience_variant_label",
+    ]
+    if need_ecommerce:
+        final_cols += [
+            "    ed.transaction_id  AS transaction_id",
+            "    ed.purchase_revenue AS purchase_revenue",
+        ]
+    if p.kpi_device_split:
+        final_cols += [
+            "    dd.is_mobile_user",
+            "    dd.is_desktop_user",
+        ]
+    if p.kpi_add_to_cart:
+        final_cols.append(
+            "    CASE WHEN atc.atc_user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS has_added_to_cart"
+        )
+    if p.kpi_ideal:
+        final_cols.append(
+            "    CASE WHEN iu.user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS paid_with_ideal"
+        )
+    if p.kpi_login:
+        final_cols.append("    COALESCE(ld.has_logged_in, 0) AS has_logged_in")
+    if p.kpi_create_account:
+        final_cols.append("    COALESCE(cd.has_created_account, 0) AS has_created_account")
+
+    final_select = ",\n".join(final_cols)
+
+    # -----------------------------------------------------------------------
+    # Outer aggregated SELECT -- plain column names, no table alias prefixes.
+    # -----------------------------------------------------------------------
+    select_cols = [
+        "  experience_variant_label",
+        "  COUNT(DISTINCT variant_user_pseudo_id) AS visitors",
+    ]
+    if p.kpi_transactions:
+        select_cols += [
+            "  COUNT(DISTINCT CASE WHEN transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS users_with_transaction",
+            "  SUM(CASE WHEN transaction_id IS NOT NULL THEN transaction_id ELSE 0 END) AS total_transactions",
+        ]
+    if p.kpi_aov:
+        select_cols.append(
+            "  ROUND(SUM(purchase_revenue) / NULLIF(SUM(CASE WHEN transaction_id IS NOT NULL THEN transaction_id ELSE 0 END), 0), 2) AS average_order_value"
+        )
+    if p.kpi_device_split:
+        select_cols += [
+            "  COUNT(DISTINCT CASE WHEN is_mobile_user  = 1 THEN variant_user_pseudo_id END) AS mobile_users",
+            "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 THEN variant_user_pseudo_id END) AS desktop_users",
+        ]
+        if p.kpi_transactions:
+            select_cols += [
+                "  COUNT(DISTINCT CASE WHEN is_mobile_user  = 1 AND transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS mobile_buyers",
+                "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 AND transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS desktop_buyers",
+            ]
+    if p.kpi_add_to_cart:
+        select_cols.append("  SUM(has_added_to_cart) AS add_to_cart")
+    if p.kpi_ideal:
+        select_cols.append("  SUM(paid_with_ideal) AS paid_with_ideal")
+    if p.kpi_login:
+        select_cols.append("  SUM(has_logged_in) AS login_page_visits")
+    if p.kpi_create_account:
+        select_cols.append("  SUM(has_created_account) AS account_creation_page_visits")
+
+    select_block = ",\n".join(select_cols)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    return f"""-- Binomial experiment export
+DECLARE start_date STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date   STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+
+WITH
+{exposure_ctes}{ecommerce_cte}{device_cte}{optional_ctes}
+final_data AS (
+  SELECT
+{final_select}
+  FROM variant_data vd
+{ecommerce_join}{device_join}{optional_joins}  WHERE vd.experience_variant_label != 'Other'
+)
+
+SELECT
+{select_block}
+FROM final_data
+GROUP BY experience_variant_label
+ORDER BY experience_variant_label{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# CONTINUOUS
+# ---------------------------------------------------------------------------
+
+def build_continuous(p: ContinuousExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    exp = p.experiments[0]
+
+    all_variant_strings = [v.string for v in exp.variants]
+    variant_in_list = ", ".join(f"'{_esc(s)}'" for s in all_variant_strings)
+
+    if p.match_strategy == MatchStrategy.LIKE:
+        exp_filter = f"AND exp_variant_string LIKE '%{_esc(exp.prefix)}%'"
+    else:
+        exp_filter = f"AND exp_variant_string IN ({variant_in_list})"
+
+    case_lines = []
+    for v in exp.variants:
+        op = "LIKE" if p.match_strategy == MatchStrategy.LIKE else "="
+        case_lines.append(f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+    case_block = "\n".join(case_lines)
+
+    join_type = "INNER JOIN" if p.query_mode == ContinuousQueryMode.REVENUE_ONLY else "LEFT JOIN"
+
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    # Mirrors build_binomial's post_exposure_filter handling: purchases from
+    # *before* a user's first recorded experiment exposure are excluded when on.
+    ts_col = "event_timestamp AS first_exposure_timestamp," if p.post_exposure_filter else ""
+
+    if p.post_exposure_filter:
+        ecommerce_cte = """ecommerce_data AS (
+  SELECT
+    e.user_pseudo_id,
+    e.ecommerce.transaction_id AS transaction_id,
+    SUM(e.ecommerce.purchase_revenue)    AS purchase_revenue,
+    SUM(e.ecommerce.total_item_quantity) AS total_item_quantity
+  FROM single_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.user_pseudo_id
+  WHERE e.event_name = 'purchase'
+    AND e.ecommerce.purchase_revenue IS NOT NULL
+    AND e.ecommerce.purchase_revenue <> 0.0
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id, transaction_id
+)"""
+    else:
+        ecommerce_cte = """ecommerce_data AS (
+  SELECT
+    user_pseudo_id,
+    ecommerce.transaction_id AS transaction_id,
+    SUM(ecommerce.purchase_revenue)    AS purchase_revenue,
+    SUM(ecommerce.total_item_quantity) AS total_item_quantity
+  FROM single_scan
+  WHERE event_name = 'purchase'
+    AND ecommerce.purchase_revenue IS NOT NULL
+    AND ecommerce.purchase_revenue <> 0.0
+  GROUP BY user_pseudo_id, transaction_id
+)"""
+
+    return f"""-- Continuous experiment export
+DECLARE start_date    STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date      STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+DECLARE device_filter STRING DEFAULT '{p.device_filter.value}';
+
+WITH
+single_scan AS (
+  SELECT
+    user_pseudo_id,
+    event_name,
+    event_timestamp,
+    ecommerce,
+    (SELECT p.value.string_value
+     FROM UNNEST(event_params) AS p
+     WHERE p.key = '{_esc(p.param_key)}'
+     LIMIT 1) AS exp_variant_string
+  FROM {table}
+  WHERE {suffix}
+    AND (
+      event_name = 'purchase'
+      OR EXISTS (SELECT 1 FROM UNNEST(event_params) AS p WHERE p.key = '{_esc(p.param_key)}')
+    )
+    AND user_pseudo_id IS NOT NULL
+),
+
+user_initial_exposure AS (
+  SELECT
+    user_pseudo_id,
+    exp_variant_string,
+    event_timestamp,
+    ROW_NUMBER() OVER (PARTITION BY user_pseudo_id ORDER BY event_timestamp ASC) AS rn
+  FROM single_scan
+  WHERE exp_variant_string IS NOT NULL
+    {exp_filter}
+),
+
+variant_data AS (
+  SELECT
+    user_pseudo_id,
+    {ts_col}
+    CASE
+{case_block}
+      ELSE 'Other'
+    END AS experience_variant_label
+  FROM user_initial_exposure
+  WHERE rn = 1
+    AND CASE
+{case_block}
+          ELSE 'Other'
+        END != 'Other'
+),
+
+device_data AS (
+  SELECT
+    user_pseudo_id AS device_user_pseudo_id,
+    CASE
+      WHEN COUNTIF(device.category = 'desktop') >= COUNTIF(device.category = 'mobile') THEN 'desktop'
+      ELSE 'mobile'
+    END AS primary_device
+  FROM {table}
+  WHERE {suffix}
+    AND user_pseudo_id IS NOT NULL
+    AND device.category IN ('desktop', 'mobile')
+  GROUP BY user_pseudo_id
+),
+
+{ecommerce_cte}
+
+SELECT
+  vd.user_pseudo_id        AS variant_user_pseudo_id,
+  vd.experience_variant_label,
+  ed.purchase_revenue,
+  ed.total_item_quantity,
+  ed.transaction_id
+FROM variant_data vd
+{join_type} ecommerce_data ed ON vd.user_pseudo_id = ed.user_pseudo_id
+LEFT JOIN device_data       dd ON vd.user_pseudo_id = dd.device_user_pseudo_id
+WHERE ('{p.device_filter.value}' = 'all' OR dd.primary_device = '{p.device_filter.value}')
+ORDER BY ed.purchase_revenue DESC{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# SHARED SCAN -- one-pass read of events_* backing both binomial and continuous
+# ---------------------------------------------------------------------------
+# When a caller wants binomial AND continuous output for the same experiment,
+# both would otherwise independently re-scan events_* (and, internally,
+# build_binomial itself already re-scans it once per KPI CTE). These
+# functions factor that scan out once; build_*_from_shared_scan then read
+# from a `shared_scan` relation instead of the raw table. The caller decides
+# whether `shared_scan` is a CTE (single output, one ordinary query) or a
+# session-scoped TEMP TABLE (both outputs, two queries against one scan) --
+# these functions don't know or care which.
+
+def experiment_shared_scan_flags(
+    bp: Optional[BinomialExtractionParams], cp: Optional[ContinuousExtractionParams] = None,
+) -> Tuple[bool, bool]:
+    """
+    Returns (need_page_location, need_payment_type) -- the extra columns
+    build_binomial_from_shared_scan/build_continuous_from_shared_scan need
+    for binomial's cost-warning KPIs (login/create-account use page_location,
+    iDEAL uses payment_type) and/or a CONTAINS/REGEX user filter on either
+    params (an EVENT filter needs no extra column -- event_name is already
+    always selected in shared_scan).
+    """
+    need_page_location = False
+    need_payment_type = False
+    if bp is not None:
+        need_page_location = (
+            need_page_location
+            or bp.kpi_login
+            or bp.kpi_create_account
+            or bp.filter_type in (UserFilterType.CONTAINS, UserFilterType.REGEX)
+        )
+        need_payment_type = need_payment_type or bp.kpi_ideal
+    if cp is not None:
+        need_page_location = need_page_location or cp.filter_type in (
+            UserFilterType.CONTAINS,
+            UserFilterType.REGEX,
+        )
+    return need_page_location, need_payment_type
+
+
+def build_shared_scan_select(
+    project: str,
+    dataset: str,
+    start_date: str,
+    end_date: str,
+    param_key: str,
+    need_page_location: bool = False,
+    need_payment_type: bool = False,
+) -> str:
+    """
+    Bare SELECT -- no CREATE TABLE / WITH wrapper -- over events_* for the
+    date range, no event_name filter (matches the union of what every
+    downstream CTE in build_binomial/build_continuous already scans
+    independently). Used three ways by callers: as-is for a dry-run cost
+    probe, wrapped in `WITH shared_scan AS (...)` for the single-output
+    case, or wrapped in `CREATE TEMP TABLE shared_scan AS ...` for the
+    two-output session case.
+    """
+    table = table_ref(project, dataset)
+    suffix = suffix_filter(start_date, end_date)
+
+    optional_cols = ""
+    if need_page_location:
+        optional_cols += """,
+    (SELECT p.value.string_value
+     FROM UNNEST(event_params) AS p
+     WHERE p.key = 'page_location'
+     LIMIT 1) AS page_location"""
+    if need_payment_type:
+        optional_cols += """,
+    (SELECT p.value.string_value
+     FROM UNNEST(event_params) AS p
+     WHERE p.key = 'payment_type'
+     LIMIT 1) AS payment_type"""
+
+    return f"""SELECT
+    user_pseudo_id,
+    event_name,
+    event_timestamp,
+    ecommerce.transaction_id      AS transaction_id,
+    ecommerce.purchase_revenue    AS purchase_revenue,
+    ecommerce.total_item_quantity AS total_item_quantity,
+    device.category               AS device_category,
+    (SELECT p.value.string_value
+     FROM UNNEST(event_params) AS p
+     WHERE p.key = '{_esc(param_key)}'
+     LIMIT 1) AS exp_variant_string{optional_cols}
+  FROM {table}
+  WHERE {suffix}
+    AND user_pseudo_id IS NOT NULL"""
+
+
+def _shared_scan_user_filter(filter_type: Optional[UserFilterType], filter_value: str) -> str:
+    """
+    Optional filtered_users CTE, sourced from shared_scan rather than a
+    fresh table scan -- shared_scan already carries every event row (incl.
+    event_name) in the date range, so an EVENT filter is free; a
+    CONTAINS/REGEX filter needs shared_scan's optional page_location column
+    (see experiment_shared_scan_flags). Returns "" when disabled, and the
+    CTE body WITHOUT a trailing comma or trailing newline -- callers splice
+    it into their own CTE chain and add a comma only if something follows it.
+
+    CONTAINS/REGEX is restricted to event_name = 'page_view', matching
+    _baseline_user_filter. Without this, shared_scan's page_location column
+    -- populated for ANY event that happens to carry that param, e.g.
+    click/scroll/video/file_download under GA4's enhanced measurement --
+    would scope the main experiment population differently than a baseline
+    export built from the same filter, silently undermining a
+    baseline-vs-experiment comparison.
+    """
+    if not (filter_type and filter_value):
+        return ""
+    if filter_type == UserFilterType.EVENT:
+        condition = f"event_name = '{_esc(filter_value)}'"
+    elif filter_type == UserFilterType.REGEX:
+        condition = f"event_name = 'page_view' AND REGEXP_CONTAINS(page_location, r'{_esc_re(filter_value)}')"
+    else:
+        condition = f"event_name = 'page_view' AND page_location LIKE '%{_esc(filter_value)}%'"
+    return f"""
+filtered_users AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM shared_scan
+  WHERE {condition}
+)"""
+
+
+def build_binomial_from_shared_scan(p: BinomialExtractionParams) -> str:
+    """
+    Same output as build_binomial, but every CTE reads FROM shared_scan
+    instead of independently re-scanning the raw table. Returns the CTE
+    chain body WITHOUT a leading `WITH` keyword or trailing semicolon --
+    the caller prepends `WITH shared_scan AS (...),` (single output) or
+    `WITH ` (shared_scan already a temp table, two-output session case).
+    """
+    exp = p.experiments[0]
+
+    all_variant_strings = [v.string for v in exp.variants]
+    variant_in_list = ", ".join(f"'{_esc(s)}'" for s in all_variant_strings)
+
+    if p.match_strategy == MatchStrategy.LIKE:
+        exp_filter = f"AND exp_variant_string LIKE '%{_esc(exp.prefix)}%'"
+    else:
+        exp_filter = f"AND exp_variant_string IN ({variant_in_list})"
+
+    case_block = _variant_case_block(exp, p.match_strategy, source_col="exp_variant_string")
+
+    ts_col = "event_timestamp AS first_exposure_timestamp," if p.post_exposure_filter else ""
+
+    exposure_ctes = f"""
+user_initial_exposure AS (
+  SELECT
+    user_pseudo_id,
+    exp_variant_string,
+    event_timestamp,
+    ROW_NUMBER() OVER (
+      PARTITION BY user_pseudo_id
+      ORDER BY event_timestamp ASC
+    ) AS rn
+  FROM shared_scan
+  WHERE exp_variant_string IS NOT NULL
+    {exp_filter}
+),
+
+variant_data AS (
+  SELECT
+    user_pseudo_id AS variant_user_pseudo_id,
+    {ts_col}
+    CASE
+{case_block}
+      ELSE 'Other'
+    END AS experience_variant_label
+  FROM user_initial_exposure
+  WHERE rn = 1
+),
+"""
+
+    ecommerce_cte = ""
+    ecommerce_join = ""
+    device_cte = ""
+    device_join = ""
+    optional_ctes = ""
+    optional_joins = ""
+
+    need_ecommerce = p.kpi_transactions or p.kpi_aov
+
+    if need_ecommerce:
+        if p.post_exposure_filter:
+            ecommerce_cte = """
+ecommerce_data AS (
+  SELECT
+    e.user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(e.purchase_revenue)          AS purchase_revenue,
+    COUNT(DISTINCT e.transaction_id) AS transaction_id
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE e.event_name = 'purchase'
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id
+),
+"""
+        else:
+            ecommerce_cte = """
+ecommerce_data AS (
+  SELECT
+    user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(purchase_revenue)          AS purchase_revenue,
+    COUNT(DISTINCT transaction_id) AS transaction_id
+  FROM shared_scan
+  WHERE event_name = 'purchase'
+  GROUP BY user_pseudo_id
+),
+"""
+        ecommerce_join = "  LEFT JOIN ecommerce_data ed ON vd.variant_user_pseudo_id = ed.ecommerce_user_pseudo_id\n"
+
+    if p.kpi_device_split:
+        device_cte = """
+device_data AS (
+  SELECT
+    user_pseudo_id AS device_user_pseudo_id,
+    MAX(CASE WHEN device_category = 'mobile'  THEN 1 ELSE 0 END) AS is_mobile_user,
+    MAX(CASE WHEN device_category = 'desktop' THEN 1 ELSE 0 END) AS is_desktop_user
+  FROM shared_scan
+  GROUP BY user_pseudo_id
+),
+"""
+        device_join = "  LEFT JOIN device_data dd ON vd.variant_user_pseudo_id = dd.device_user_pseudo_id\n"
+
+    if p.kpi_add_to_cart:
+        if p.post_exposure_filter:
+            optional_ctes += """
+add_to_cart_data AS (
+  SELECT e.user_pseudo_id AS atc_user_pseudo_id
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE e.event_name = 'add_to_cart'
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id
+),
+"""
+        else:
+            optional_ctes += """
+add_to_cart_data AS (
+  SELECT user_pseudo_id AS atc_user_pseudo_id
+  FROM shared_scan
+  WHERE event_name = 'add_to_cart'
+  GROUP BY user_pseudo_id
+),
+"""
+        optional_joins += "  LEFT JOIN add_to_cart_data atc ON vd.variant_user_pseudo_id = atc.atc_user_pseudo_id\n"
+
+    if p.kpi_login:
+        if p.post_exposure_filter:
+            optional_ctes += """
+login_data AS (
+  SELECT e.user_pseudo_id AS login_user_pseudo_id, 1 AS has_logged_in
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE e.event_name = 'page_view'
+    AND e.page_location LIKE '%/customer/account/login%'
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY 1
+),
+"""
+        else:
+            optional_ctes += """
+login_data AS (
+  SELECT user_pseudo_id AS login_user_pseudo_id, 1 AS has_logged_in
+  FROM shared_scan
+  WHERE event_name = 'page_view'
+    AND page_location LIKE '%/customer/account/login%'
+  GROUP BY 1
+),
+"""
+        optional_joins += "  LEFT JOIN login_data ld ON vd.variant_user_pseudo_id = ld.login_user_pseudo_id\n"
+
+    if p.kpi_create_account:
+        if p.post_exposure_filter:
+            optional_ctes += """
+create_account_data AS (
+  SELECT e.user_pseudo_id AS create_user_pseudo_id, 1 AS has_created_account
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE e.event_name = 'page_view'
+    AND e.page_location LIKE '%/customer/account/register%'
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY 1
+),
+"""
+        else:
+            optional_ctes += """
+create_account_data AS (
+  SELECT user_pseudo_id AS create_user_pseudo_id, 1 AS has_created_account
+  FROM shared_scan
+  WHERE event_name = 'page_view'
+    AND page_location LIKE '%/customer/account/register%'
+  GROUP BY 1
+),
+"""
+        optional_joins += "  LEFT JOIN create_account_data cd ON vd.variant_user_pseudo_id = cd.create_user_pseudo_id\n"
+
+    if p.kpi_ideal:
+        if p.post_exposure_filter:
+            optional_ctes += """
+ideal_users AS (
+  SELECT DISTINCT e.user_pseudo_id
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.variant_user_pseudo_id
+  WHERE e.event_name = 'add_payment_info'
+    AND e.payment_type LIKE '%iDEAL%'
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+),
+"""
+        else:
+            optional_ctes += """
+ideal_users AS (
+  SELECT DISTINCT user_pseudo_id
+  FROM shared_scan
+  WHERE event_name = 'add_payment_info'
+    AND payment_type LIKE '%iDEAL%'
+),
+"""
+        optional_joins += "  LEFT JOIN ideal_users iu ON vd.variant_user_pseudo_id = iu.user_pseudo_id\n"
+
+    final_cols = [
+        "    vd.variant_user_pseudo_id",
+        "    vd.experience_variant_label",
+    ]
+    if need_ecommerce:
+        final_cols += [
+            "    ed.transaction_id  AS transaction_id",
+            "    ed.purchase_revenue AS purchase_revenue",
+        ]
+    if p.kpi_device_split:
+        final_cols += [
+            "    dd.is_mobile_user",
+            "    dd.is_desktop_user",
+        ]
+    if p.kpi_add_to_cart:
+        final_cols.append(
+            "    CASE WHEN atc.atc_user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS has_added_to_cart"
+        )
+    if p.kpi_ideal:
+        final_cols.append(
+            "    CASE WHEN iu.user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS paid_with_ideal"
+        )
+    if p.kpi_login:
+        final_cols.append("    COALESCE(ld.has_logged_in, 0) AS has_logged_in")
+    if p.kpi_create_account:
+        final_cols.append("    COALESCE(cd.has_created_account, 0) AS has_created_account")
+
+    final_select = ",\n".join(final_cols)
+
+    select_cols = [
+        "  experience_variant_label",
+        "  COUNT(DISTINCT variant_user_pseudo_id) AS visitors",
+    ]
+    if p.kpi_transactions:
+        select_cols += [
+            "  COUNT(DISTINCT CASE WHEN transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS users_with_transaction",
+            "  SUM(CASE WHEN transaction_id IS NOT NULL THEN transaction_id ELSE 0 END) AS total_transactions",
+        ]
+    if p.kpi_aov:
+        select_cols.append(
+            "  ROUND(SUM(purchase_revenue) / NULLIF(SUM(CASE WHEN transaction_id IS NOT NULL THEN transaction_id ELSE 0 END), 0), 2) AS average_order_value"
+        )
+    if p.kpi_device_split:
+        select_cols += [
+            "  COUNT(DISTINCT CASE WHEN is_mobile_user  = 1 THEN variant_user_pseudo_id END) AS mobile_users",
+            "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 THEN variant_user_pseudo_id END) AS desktop_users",
+        ]
+        if p.kpi_transactions:
+            select_cols += [
+                "  COUNT(DISTINCT CASE WHEN is_mobile_user  = 1 AND transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS mobile_buyers",
+                "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 AND transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS desktop_buyers",
+            ]
+    if p.kpi_add_to_cart:
+        select_cols.append("  SUM(has_added_to_cart) AS add_to_cart")
+    if p.kpi_ideal:
+        select_cols.append("  SUM(paid_with_ideal) AS paid_with_ideal")
+    if p.kpi_login:
+        select_cols.append("  SUM(has_logged_in) AS login_page_visits")
+    if p.kpi_create_account:
+        select_cols.append("  SUM(has_created_account) AS account_creation_page_visits")
+
+    select_block = ",\n".join(select_cols)
+
+    filter_cte = _shared_scan_user_filter(p.filter_type, p.filter_value)
+    filter_cte_block = f"{filter_cte},\n" if filter_cte else ""
+    filter_join = (
+        "  INNER JOIN filtered_users fu ON vd.variant_user_pseudo_id = fu.user_pseudo_id\n"
+        if filter_cte
+        else ""
+    )
+
+    return f"""{exposure_ctes}{ecommerce_cte}{device_cte}{optional_ctes}{filter_cte_block}
+final_data AS (
+  SELECT
+{final_select}
+  FROM variant_data vd
+{ecommerce_join}{device_join}{optional_joins}{filter_join}  WHERE vd.experience_variant_label != 'Other'
+)
+
+SELECT
+{select_block}
+FROM final_data
+GROUP BY experience_variant_label
+ORDER BY experience_variant_label"""
+
+
+def build_continuous_from_shared_scan(p: ContinuousExtractionParams) -> str:
+    """
+    Same output as build_continuous, but sourced from shared_scan instead of
+    independently scanning the raw table twice (single_scan + device_data).
+    Returns the CTE chain body WITHOUT a leading `WITH` keyword or trailing
+    semicolon -- see build_binomial_from_shared_scan for the wrapping contract.
+    """
+    exp = p.experiments[0]
+
+    all_variant_strings = [v.string for v in exp.variants]
+    variant_in_list = ", ".join(f"'{_esc(s)}'" for s in all_variant_strings)
+
+    if p.match_strategy == MatchStrategy.LIKE:
+        exp_filter = f"AND exp_variant_string LIKE '%{_esc(exp.prefix)}%'"
+    else:
+        exp_filter = f"AND exp_variant_string IN ({variant_in_list})"
+
+    case_lines = []
+    for v in exp.variants:
+        op = "LIKE" if p.match_strategy == MatchStrategy.LIKE else "="
+        case_lines.append(f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+    case_block = "\n".join(case_lines)
+
+    join_type = "INNER JOIN" if p.query_mode == ContinuousQueryMode.REVENUE_ONLY else "LEFT JOIN"
+
+    filter_cte = _shared_scan_user_filter(p.filter_type, p.filter_value)
+    ecommerce_trailer = f",\n{filter_cte}\n" if filter_cte else "\n"
+    filter_join = (
+        "INNER JOIN filtered_users fu ON vd.user_pseudo_id = fu.user_pseudo_id\n" if filter_cte else ""
+    )
+
+    # Mirrors build_binomial_from_shared_scan's post_exposure_filter handling.
+    ts_col = "event_timestamp AS first_exposure_timestamp," if p.post_exposure_filter else ""
+
+    if p.post_exposure_filter:
+        ecommerce_cte = """ecommerce_data AS (
+  SELECT
+    e.user_pseudo_id,
+    e.transaction_id,
+    SUM(e.purchase_revenue)    AS purchase_revenue,
+    SUM(e.total_item_quantity) AS total_item_quantity
+  FROM shared_scan e
+  INNER JOIN variant_data vd ON e.user_pseudo_id = vd.user_pseudo_id
+  WHERE e.event_name = 'purchase'
+    AND e.purchase_revenue IS NOT NULL
+    AND e.purchase_revenue <> 0.0
+    AND e.event_timestamp >= vd.first_exposure_timestamp
+  GROUP BY e.user_pseudo_id, e.transaction_id
+)"""
+    else:
+        ecommerce_cte = """ecommerce_data AS (
+  SELECT
+    user_pseudo_id,
+    transaction_id,
+    SUM(purchase_revenue)    AS purchase_revenue,
+    SUM(total_item_quantity) AS total_item_quantity
+  FROM shared_scan
+  WHERE event_name = 'purchase'
+    AND purchase_revenue IS NOT NULL
+    AND purchase_revenue <> 0.0
+  GROUP BY user_pseudo_id, transaction_id
+)"""
+
+    return f"""
+user_initial_exposure AS (
+  SELECT
+    user_pseudo_id,
+    exp_variant_string,
+    event_timestamp,
+    ROW_NUMBER() OVER (PARTITION BY user_pseudo_id ORDER BY event_timestamp ASC) AS rn
+  FROM shared_scan
+  WHERE exp_variant_string IS NOT NULL
+    {exp_filter}
+),
+
+variant_data AS (
+  SELECT
+    user_pseudo_id,
+    {ts_col}
+    CASE
+{case_block}
+      ELSE 'Other'
+    END AS experience_variant_label
+  FROM user_initial_exposure
+  WHERE rn = 1
+    AND CASE
+{case_block}
+          ELSE 'Other'
+        END != 'Other'
+),
+
+device_data AS (
+  SELECT
+    user_pseudo_id AS device_user_pseudo_id,
+    CASE
+      WHEN COUNTIF(device_category = 'desktop') >= COUNTIF(device_category = 'mobile') THEN 'desktop'
+      ELSE 'mobile'
+    END AS primary_device
+  FROM shared_scan
+  WHERE device_category IN ('desktop', 'mobile')
+  GROUP BY user_pseudo_id
+),
+
+{ecommerce_cte}{ecommerce_trailer}
+SELECT
+  vd.user_pseudo_id        AS variant_user_pseudo_id,
+  vd.experience_variant_label,
+  ed.purchase_revenue,
+  ed.total_item_quantity,
+  ed.transaction_id
+FROM variant_data vd
+{join_type} ecommerce_data ed ON vd.user_pseudo_id = ed.user_pseudo_id
+LEFT JOIN device_data       dd ON vd.user_pseudo_id = dd.device_user_pseudo_id
+{filter_join}WHERE ('{p.device_filter.value}' = 'all' OR dd.primary_device = '{p.device_filter.value}')
+ORDER BY ed.purchase_revenue DESC"""
+
+
+def build_experiment_single_output_sql(shared_scan_select: str, cte_chain: str, limit: int = 0) -> str:
+    """Wraps a from-shared-scan CTE chain for the one-output case: shared_scan
+    as an ordinary CTE, one query, no BigQuery session required."""
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+    return f"""-- Experiment export (shared scan, single output)
+WITH shared_scan AS (
+{shared_scan_select}
+),
+{cte_chain}{limit_clause};
+"""
+
+
+def build_experiment_shared_scan_temp_table_sql(shared_scan_select: str) -> str:
+    """Wraps the shared-scan SELECT as a session-scoped TEMP TABLE, for the
+    two-output case -- materialized once, read by two separate queries."""
+    return f"""-- Experiment export (shared scan, materialized for two outputs)
+CREATE TEMP TABLE shared_scan AS
+{shared_scan_select};
+"""
+
+
+def build_experiment_session_output_sql(cte_chain: str, limit: int = 0) -> str:
+    """Wraps a from-shared-scan CTE chain to run as its own query against an
+    already-materialized `shared_scan` temp table within a BigQuery session."""
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+    return f"""WITH {cte_chain}{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# SEQUENTIAL
+# ---------------------------------------------------------------------------
+
+def build_sequential(p: SequentialExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    exp = p.experiments[0]
+
+    all_variant_strings = [v.string for v in exp.variants]
+    variant_in_list = ", ".join(f"'{_esc(s)}'" for s in all_variant_strings)
+
+    case_lines = []
+    for v in exp.variants:
+        case_lines.append(f"      WHEN exp_variant_string = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+    case_block = "\n".join(case_lines)
+
+    cumulative_table = (
+        f"`{validate_table_ref(p.cumulative_table, field_name='cumulative_table')}`"
+        if p.cumulative_table
+        else "`project.dataset.cumulative_test_data`"
+    )
+
+    persistence_flag = str(p.use_persistence).upper()
+    reset_flag = str(p.reset_cumulative_data).upper()
+
+    optional_cols_extract = ""
+    optional_cols_schema = ""
+    if p.kpi_ideal:
+        optional_cols_schema += "  paid_with_ideal INT64,\n"
+        optional_cols_extract += "  CASE WHEN iu.user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS paid_with_ideal,\n"
+
+    if p.kpi_login:
+        optional_cols_schema += "  has_logged_in INT64,\n"
+        optional_cols_extract += "  COALESCE(ld.has_logged_in, 0) AS has_logged_in,\n"
+
+    final_selects = ["  experience_variant_label", "  COUNT(DISTINCT variant_user_pseudo_id) AS visitors"]
+    if p.kpi_transactions:
+        final_selects += [
+            "  COUNT(DISTINCT CASE WHEN transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS users_with_transaction",
+            "  SUM(transaction_id) AS total_transactions",
+        ]
+    if p.kpi_aov:
+        final_selects.append(
+            "  ROUND(SUM(purchase_revenue) / NULLIF(COUNT(DISTINCT CASE WHEN transaction_id IS NOT NULL THEN variant_user_pseudo_id END), 0), 2) AS average_order_value"
+        )
+    if p.kpi_device_split:
+        final_selects += [
+            "  COUNT(DISTINCT CASE WHEN is_mobile_user  = 1 THEN variant_user_pseudo_id END) AS mobile_users",
+            "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 THEN variant_user_pseudo_id END) AS desktop_users",
+        ]
+    if p.kpi_add_to_cart:
+        final_selects.append("  COUNT(DISTINCT CASE WHEN added_to_cart = 1 THEN variant_user_pseudo_id END) AS add_to_cart")
+    if p.kpi_ideal:
+        final_selects.append("  COUNT(DISTINCT CASE WHEN paid_with_ideal = 1 THEN variant_user_pseudo_id END) AS paid_with_ideal")
+
+    select_block = ",\n".join(final_selects)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    return f"""-- Sequential test export
+DECLARE start_date            STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date              STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+DECLARE use_persistence       BOOL   DEFAULT {persistence_flag};
+DECLARE reset_cumulative_data BOOL   DEFAULT {reset_flag};
+
+--------------------------------------------------------------------------------
+-- 1. TABLE MANAGEMENT
+--------------------------------------------------------------------------------
+IF use_persistence THEN
+  CREATE TABLE IF NOT EXISTS {cumulative_table} (
+    variant_user_pseudo_id STRING,
+    experience_variant_label STRING,
+    purchase_revenue FLOAT64,
+    total_item_quantity INT64,
+    transaction_id INT64,
+    is_mobile_user INT64,
+    is_desktop_user INT64,
+    added_to_cart INT64,
+{optional_cols_schema}    processed_at TIMESTAMP
+  );
+  IF reset_cumulative_data THEN
+    TRUNCATE TABLE {cumulative_table};
+  END IF;
+END IF;
+
+--------------------------------------------------------------------------------
+-- 2. DATA EXTRACTION
+--------------------------------------------------------------------------------
+CREATE TEMP TABLE combined_new_data AS
+
+WITH
+user_initial_exposure AS (
+  SELECT
+    user_pseudo_id,
+    params.value.string_value AS exp_variant_string,
+    ROW_NUMBER() OVER (PARTITION BY user_pseudo_id ORDER BY event_timestamp ASC) AS rn
+  FROM {table}, UNNEST(event_params) AS params
+  WHERE {suffix}
+    AND params.key = '{_esc(p.param_key)}'
+    AND params.value.string_value IN ({variant_in_list})
+    AND user_pseudo_id IS NOT NULL
+),
+
+variant_data AS (
+  SELECT
+    user_pseudo_id AS variant_user_pseudo_id,
+    CASE
+{case_block}
+      ELSE 'Other'
+    END AS experience_variant_label
+  FROM user_initial_exposure
+  WHERE rn = 1
+),
+
+ecommerce_data AS (
+  SELECT
+    user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(ecommerce.purchase_revenue)          AS purchase_revenue,
+    SUM(ecommerce.total_item_quantity)       AS total_item_quantity,
+    COUNT(DISTINCT ecommerce.transaction_id) AS transaction_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'purchase'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY 1
+),
+
+add_to_cart_data AS (
+  SELECT user_pseudo_id AS atc_user_pseudo_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'add_to_cart'
+    AND user_pseudo_id IS NOT NULL
+  GROUP BY 1
+),
+
+device_data AS (
+  SELECT
+    user_pseudo_id AS device_user_pseudo_id,
+    MAX(CASE WHEN device.category = 'mobile'  THEN 1 ELSE 0 END) AS is_mobile_user,
+    MAX(CASE WHEN device.category = 'desktop' THEN 1 ELSE 0 END) AS is_desktop_user
+  FROM {table}
+  WHERE {suffix}
+  GROUP BY 1
+)
+
+SELECT
+  vd.variant_user_pseudo_id,
+  vd.experience_variant_label,
+  COALESCE(ed.purchase_revenue, 0)    AS purchase_revenue,
+  COALESCE(ed.total_item_quantity, 0) AS total_item_quantity,
+  ed.transaction_id,
+  COALESCE(dd.is_mobile_user, 0)      AS is_mobile_user,
+  COALESCE(dd.is_desktop_user, 0)     AS is_desktop_user,
+  CASE WHEN atc.atc_user_pseudo_id IS NOT NULL THEN 1 ELSE 0 END AS added_to_cart,
+{optional_cols_extract}  CURRENT_TIMESTAMP() AS processed_at
+FROM variant_data vd
+LEFT JOIN ecommerce_data   ed  ON vd.variant_user_pseudo_id = ed.ecommerce_user_pseudo_id
+LEFT JOIN device_data      dd  ON vd.variant_user_pseudo_id = dd.device_user_pseudo_id
+LEFT JOIN add_to_cart_data atc ON vd.variant_user_pseudo_id = atc.atc_user_pseudo_id
+WHERE vd.experience_variant_label != 'Other';
+
+--------------------------------------------------------------------------------
+-- 3. CUMULATIVE UPDATE
+--------------------------------------------------------------------------------
+IF use_persistence THEN
+  INSERT INTO {cumulative_table}
+  SELECT * FROM combined_new_data
+  WHERE variant_user_pseudo_id NOT IN (
+    SELECT variant_user_pseudo_id FROM {cumulative_table}
+  );
+END IF;
+
+--------------------------------------------------------------------------------
+-- 4. FINAL AGGREGATION
+--------------------------------------------------------------------------------
+WITH final_source AS (
+  SELECT * FROM combined_new_data  WHERE NOT use_persistence
+  UNION ALL
+  SELECT * FROM {cumulative_table} WHERE use_persistence
+)
+
+SELECT
+{select_block}
+FROM final_source
+GROUP BY 1
+ORDER BY 1{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# INTERACTION
+# ---------------------------------------------------------------------------
+
+def build_interaction(p: InteractionExtractionParams, limit: int = 0) -> str:
+    table = table_ref(p.connection.project, p.connection.dataset)
+    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    n = len(p.experiments)
+
+    # Collect all variant strings for the IN filter
+    all_strings = []
+    for exp in p.experiments:
+        for v in exp.variants:
+            if v.string:
+                all_strings.append(f"NULLIF('{_esc(v.string)}', '')")
+    in_clause = ", ".join(all_strings)
+
+    # Build CONCAT CASE WHEN for each experiment
+    concat_cases = []
+    for exp in p.experiments:
+        a_str = next((v.string for v in exp.variants if v.label == "A"), "")
+        b_str = next((v.string for v in exp.variants if v.label == "B"), "")
+        concat_cases.append(
+            f"      CASE\n"
+            f"        WHEN '{_esc(a_str)}' = '' AND '{_esc(b_str)}' = '' THEN ''\n"
+            f"        WHEN '{_esc(a_str)}' IN UNNEST(seen_variants) THEN 'A'\n"
+            f"        WHEN '{_esc(b_str)}' IN UNNEST(seen_variants) THEN 'B'\n"
+            f"        ELSE '_'\n"
+            f"      END"
+        )
+    concat_block = ",\n".join(concat_cases)
+
+    select_cols = ["  experience_variant_label", "  COUNT(DISTINCT variant_user_pseudo_id) AS total_users"]
+    if p.kpi_transactions:
+        select_cols += [
+            "  COUNT(DISTINCT CASE WHEN ed.transaction_id IS NOT NULL THEN cu.variant_user_pseudo_id END) AS users_with_transaction",
+            "  COUNT(DISTINCT ed.transaction_id) AS total_transactions",
+        ]
+    if p.kpi_add_to_cart:
+        select_cols.append(
+            "  COUNT(DISTINCT CASE WHEN atc.atc_user_pseudo_id IS NOT NULL THEN cu.variant_user_pseudo_id END) AS add_to_cart"
+        )
+
+    select_block = ",\n".join(select_cols)
+    limit_clause = f"\nLIMIT {limit}" if limit else ""
+
+    ecommerce_cte = ""
+    ecommerce_join = ""
+    atc_cte = ""
+    atc_join = ""
+
+    if p.kpi_transactions:
+        ecommerce_cte = f"""
+ecommerce_data AS (
+  SELECT
+    user_pseudo_id AS ecommerce_user_pseudo_id,
+    SUM(ecommerce.purchase_revenue)          AS purchase_revenue,
+    COUNT(DISTINCT ecommerce.transaction_id) AS transaction_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'purchase'
+  GROUP BY user_pseudo_id, ecommerce.transaction_id
+),
+"""
+        ecommerce_join = "  LEFT JOIN ecommerce_data ed ON cu.variant_user_pseudo_id = ed.ecommerce_user_pseudo_id\n"
+
+    if p.kpi_add_to_cart:
+        atc_cte = f"""
+add_to_cart_data AS (
+  SELECT user_pseudo_id AS atc_user_pseudo_id
+  FROM {table}
+  WHERE {suffix}
+    AND event_name = 'add_to_cart'
+  GROUP BY user_pseudo_id
+),
+"""
+        atc_join = "  LEFT JOIN add_to_cart_data atc ON cu.variant_user_pseudo_id = atc.atc_user_pseudo_id\n"
+
+    return f"""-- Interaction export — {n} experiment(s)
+DECLARE start_date          STRING DEFAULT '{p.date_range.start_date.isoformat()}';
+DECLARE end_date            STRING DEFAULT '{p.date_range.end_date.isoformat()}';
+DECLARE event_parameter_key STRING DEFAULT '{_esc(p.param_key)}';
+
+WITH
+variant_data AS (
+  SELECT
+    user_pseudo_id AS variant_user_pseudo_id,
+    ARRAY_AGG(DISTINCT params.value.string_value) AS seen_variants
+  FROM {table}, UNNEST(event_params) AS params
+  WHERE {suffix}
+    AND params.key = event_parameter_key
+    AND params.value.string_value IN ({in_clause})
+  GROUP BY user_pseudo_id
+),
+
+classified_users AS (
+  SELECT
+    variant_user_pseudo_id,
+    CONCAT(
+{concat_block}
+    ) AS experience_variant_label
+  FROM variant_data
+),
+{ecommerce_cte}{atc_cte}
+aggregated_data AS (
+  SELECT
+{select_block}
+  FROM classified_users cu
+{ecommerce_join}{atc_join}  WHERE experience_variant_label != ''
+  GROUP BY experience_variant_label
+)
+
+SELECT * FROM aggregated_data
+ORDER BY experience_variant_label{limit_clause};
+"""
+
+
+# ---------------------------------------------------------------------------
+# AUTO-DETECT QUERIES
+# ---------------------------------------------------------------------------
+
+def build_autodetect_variants_query(
+    project: str,
+    dataset: str,
+    start_date: str,
+    end_date: str,
+    param_key: str,
+    prefix: str,
+) -> str:
+    table = table_ref(project, dataset)
+    suffix = suffix_filter(start_date, end_date)
+    return f"""
+SELECT DISTINCT params.value.string_value AS variant_string
+FROM {table}, UNNEST(event_params) AS params
+WHERE {suffix}
+  AND params.key = '{_esc(param_key)}'
+  AND params.value.string_value LIKE '%{_esc(prefix)}%'
+  AND params.value.string_value IS NOT NULL
+ORDER BY variant_string
+LIMIT 500;
+"""
+
+
+def build_autodetect_event_names_query(
+    project: str,
+    dataset: str,
+    start_date: str,
+    end_date: str,
+    limit: int = 100,
+) -> str:
+    """
+    Distinct event_name values in the date range, most frequent first --
+    used to let a caller pick an event to filter users on, rather than
+    guessing a name blind. event_name is a flat top-level column (not a
+    nested event_params entry), so this is a cheap scan regardless of range
+    length -- unlike autodetect_variants, no need to sample just a short window.
+    """
+    table = table_ref(project, dataset)
+    suffix = suffix_filter(start_date, end_date)
+    return f"""
+SELECT event_name, COUNT(*) AS event_count
+FROM {table}
+WHERE {suffix}
+GROUP BY event_name
+ORDER BY event_count DESC
+LIMIT {limit};
+"""
+
+
+def build_autodetect_kpi_query(
+    project: str,
+    dataset: str,
+    start_date: str,
+    end_date: str,
+) -> str:
+    table = table_ref(project, dataset)
+    suffix = suffix_filter(start_date, end_date)
+    return f"""
+SELECT DISTINCT event_name
+FROM {table}
+WHERE {suffix}
+  AND event_name IN ('purchase', 'add_to_cart', 'add_payment_info', 'page_view')
+ORDER BY event_name
+LIMIT 50;
+"""
