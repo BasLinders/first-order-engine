@@ -37,6 +37,15 @@ dev = [
     "flake8>=6.0",
     "black>=23.0",
 ]
+# foe.data's BigQuery/OAuth connectivity (DataEngine). Deliberately optional:
+# foe's core stats engines never require these, and DataEngine itself raises
+# a clear ImportError if it's instantiated without this extra installed.
+bigquery = [
+    "google-cloud-bigquery>=3.0.0",
+    "google-cloud-resource-manager>=1.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -59,8 +68,25 @@ omit = [
     "foe/sequential/*",
     "foe/srm/*",
     "foe/viz/*",
+    # engine.py is a thin wrapper around the google-cloud-bigquery/
+    # google-auth-oauthlib client libraries -- exercising it meaningfully
+    # needs a live or heavily-mocked BigQuery backend. foe/data/sql/* (the
+    # actual SQL-building logic) is pure and stays covered.
+    "foe/data/engine.py",
 ]
 
 [tool.black]
 line-length = 88
 target-version = ['py310']
+
+[tool.pyright]
+# Pyright/Pylance doesn't recognize a positional default passed to
+# pydantic's Field(default, ...) as satisfying that constructor parameter
+# under pydantic 2.13.x -- a confirmed false positive (the flagged calls
+# construct correctly at runtime, defaults included; see any test_*.py
+# file, which all omit defaulted fields as normal, idiomatic pydantic
+# usage). Scoped to tests/, where these calls happen; foe/ itself never
+# triggers this and keeps the check fully active.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportCallIssue = "none"

@@ -1,6 +1,6 @@
 from enum import Enum
 from datetime import date
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Union
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 from foe.core.validators import validate_experiment_data
@@ -491,3 +491,398 @@ class ForecastingResult(BaseModel):
     granularity: ForecastGranularity
     targets: Dict[str, SingleTargetForecast]
     conclusion: str
+
+
+# --- Data extraction (BigQuery / GA4) ---
+#
+# foe.data is a deliberate, opt-in exception to this package's "no I/O"
+# design (see README): it is gated behind the `foe[bigquery]` extra and
+# isolated from every stats engine above. The models below describe *what*
+# to extract and *how to shape it*; like ContinuousMetricConfig and
+# ForecastingEngineConfig, they never carry row-level data themselves --
+# that stays a pandas.DataFrame, produced by DataEngine and handed to the
+# relevant engine (PretestEngine, ForecastingEngine, or an external
+# process-mining tool) exactly like a hand-built CSV would be.
+
+
+class BQConnectionConfig(BaseModel):
+    """Identifies which BigQuery project/dataset a DataEngine reads from."""
+
+    model_config = ConfigDict(frozen=True)
+
+    project: str = Field(..., min_length=1)
+    dataset: str = Field(
+        ..., min_length=1, description="GA4 export dataset, e.g. 'analytics_123456789'."
+    )
+    location: Optional[str] = Field(
+        None,
+        description="BigQuery job location (e.g. 'EU', 'US'). Auto-detected from the dataset when omitted.",
+    )
+
+
+class DateRange(BaseModel):
+    """An inclusive start/end date pair for a GA4 events_* extraction."""
+
+    model_config = ConfigDict(frozen=True)
+
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def check_order(self) -> "DateRange":
+        if self.start_date > self.end_date:
+            raise ValueError(
+                f"start_date ({self.start_date}) must be on or before end_date ({self.end_date})."
+            )
+        return self
+
+
+class QueryCostEstimate(BaseModel):
+    """Result of a BigQuery dry run: a bytes/cost estimate, no rows returned."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bytes_processed: int = Field(..., ge=0)
+    gb_processed: float = Field(..., ge=0.0)
+    display: str = Field(..., description="Human-readable size, e.g. '482.3 MB'.")
+    free_tier_pct: float = Field(
+        ..., ge=0.0, description="Percent of the 1 TB monthly free tier this query would consume."
+    )
+    is_dml: bool = Field(
+        False,
+        description=(
+            "True if the dry run failed because the SQL is a DDL/DML script "
+            "(dry run only estimates pure SELECT queries) -- see SequentialExtractionParams."
+        ),
+    )
+    error: Optional[str] = None
+
+
+class UsageReport(BaseModel):
+    """Monthly BigQuery free-tier usage, from INFORMATION_SCHEMA.JOBS_BY_PROJECT."""
+
+    model_config = ConfigDict(frozen=True)
+
+    used_bytes: int = Field(..., ge=0)
+    used_gb: float = Field(..., ge=0.0)
+    used_display: str
+    remaining_bytes: int = Field(..., ge=0)
+    remaining_gb: float = Field(..., ge=0.0)
+    remaining_display: str
+    used_pct: float = Field(..., ge=0.0, le=100.0)
+    free_tier_bytes: int = Field(..., gt=0)
+    permission_denied: bool = Field(
+        False,
+        description="True if the caller lacks bigquery.jobs.list on the project (usage could not be read).",
+    )
+    error: Optional[str] = None
+
+
+class MatchStrategy(str, Enum):
+    """How a raw GA4 event-param string is matched against a known variant string."""
+
+    EXACT = "exact"
+    LIKE = "like"
+
+
+class UserFilterType(str, Enum):
+    """
+    Scopes an extraction to a subset of users. CONTAINS/REGEX match a
+    page_view's page_location; EVENT matches users who fired a named event
+    at least once during the date range -- more robust than a URL match
+    whenever the URL itself can't differentiate page types.
+    """
+
+    CONTAINS = "contains"
+    REGEX = "regex"
+    EVENT = "event"
+
+
+class VariantPair(BaseModel):
+    """Maps a human-readable variant label ('A', 'B', ...) to its raw GA4 variant string."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str = Field(..., min_length=1)
+    string: str = Field(..., min_length=1)
+
+
+class ExperimentDefinition(BaseModel):
+    """One experiment's identity and variant map, used by the *ExtractionParams models below."""
+
+    model_config = ConfigDict(frozen=True)
+
+    experiment_id: str = Field(..., min_length=1)
+    prefix: str = Field(
+        ...,
+        min_length=1,
+        description="Substring shared by all this experiment's variant strings, used for LIKE matching.",
+    )
+    variants: List[VariantPair] = Field(..., min_length=1)
+
+
+class BaselineOutputType(str, Enum):
+    BINOMIAL = "binomial"
+    REVENUE = "revenue"
+
+
+class BaselineOutputShape(str, Enum):
+    AGGREGATE = "aggregate"
+    DAILY = "daily"
+    PER_USER = "per_user"  # revenue only -- one row per order, for pre-test distribution fitting
+
+
+class BaselineExtractionParams(BaseModel):
+    """
+    Settings for a site-wide baseline export -- feeds PretestEngine's
+    sample-size planning, not a running experiment.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    output_type: BaselineOutputType = BaselineOutputType.BINOMIAL
+    output_shape: BaselineOutputShape = BaselineOutputShape.AGGREGATE
+    # Adds add-to-cart conversion counts alongside purchase-based ones.
+    # Binomial only -- revenue mode has no "conversion" concept to extend.
+    kpi_add_to_cart: bool = False
+    filter_type: Optional[UserFilterType] = None
+    filter_value: str = ""
+
+    @model_validator(mode="after")
+    def check_per_user_is_revenue_only(self) -> "BaselineExtractionParams":
+        if (
+            self.output_shape == BaselineOutputShape.PER_USER
+            and self.output_type != BaselineOutputType.REVENUE
+        ):
+            raise ValueError("output_shape='per_user' is only meaningful for output_type='revenue'.")
+        return self
+
+
+class BinomialExtractionParams(BaseModel):
+    """Settings for a binomial (conversion-rate) experiment export."""
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    param_key: str = Field(
+        ...,
+        min_length=1,
+        description="GA4 event-param key carrying the variant string, e.g. 'exp_variant_string'.",
+    )
+    match_strategy: MatchStrategy
+    # Exactly one -- unlike InteractionExtractionParams, this builder
+    # processes a single experiment per call (build_binomial only ever
+    # reads experiments[0]). A list of length > 1 would silently have its
+    # extra entries ignored, so it's capped at 1 here rather than left to
+    # surprise a caller who reasonably assumed a list meant "one or more".
+    experiments: List[ExperimentDefinition] = Field(..., min_length=1, max_length=1)
+    post_exposure_filter: bool = True
+    # KPI toggles -- zero-cost group (no extra table scan)
+    kpi_transactions: bool = True
+    kpi_add_to_cart: bool = True
+    kpi_aov: bool = True
+    kpi_ideal: bool = False
+    kpi_device_split: bool = True
+    # KPI toggles -- cost-warning group (adds a page_view scan)
+    kpi_login: bool = False
+    kpi_create_account: bool = False
+    filter_type: Optional[UserFilterType] = None
+    filter_value: str = ""
+
+
+class ContinuousQueryMode(str, Enum):
+    ALL_USERS = "all_users"
+    REVENUE_ONLY = "revenue_only"
+
+
+class DeviceFilter(str, Enum):
+    ALL = "all"
+    DESKTOP = "desktop"
+    MOBILE = "mobile"
+
+
+class ContinuousExtractionParams(BaseModel):
+    """Settings for a continuous-metric (revenue/AOV) experiment export."""
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    param_key: str = Field(..., min_length=1)
+    match_strategy: MatchStrategy
+    # Exactly one -- see BinomialExtractionParams.experiments for why.
+    experiments: List[ExperimentDefinition] = Field(..., min_length=1, max_length=1)
+    device_filter: DeviceFilter = DeviceFilter.ALL
+    query_mode: ContinuousQueryMode = ContinuousQueryMode.ALL_USERS
+    post_exposure_filter: bool = True
+    filter_type: Optional[UserFilterType] = None
+    filter_value: str = ""
+
+
+class SequentialExtractionParams(BaseModel):
+    """
+    Settings for a sequential-test export. Unlike the other extraction
+    modes, this compiles to a full DDL/DML script (it creates/reads a
+    persistent cumulative table), not a pure SELECT -- BigQuery dry run
+    cannot cost it (see QueryCostEstimate.is_dml).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    param_key: str = Field(..., min_length=1)
+    # Exactly one -- see BinomialExtractionParams.experiments for why.
+    experiments: List[ExperimentDefinition] = Field(..., min_length=1, max_length=1)
+    use_persistence: bool = True
+    reset_cumulative_data: bool = False
+    cumulative_table: str = Field(
+        "",
+        description=(
+            "Fully-qualified 'project.dataset.table' to persist cumulative results to. "
+            "Defaults to a placeholder table name when omitted."
+        ),
+    )
+    kpi_transactions: bool = True
+    kpi_add_to_cart: bool = True
+    kpi_aov: bool = True
+    kpi_ideal: bool = False
+    kpi_device_split: bool = True
+    kpi_login: bool = False
+    kpi_create_account: bool = False
+
+
+class InteractionExtractionParams(BaseModel):
+    """
+    Settings for an interaction export -- classifies users by which
+    combination of two-or-more experiments' variants they were exposed to.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    param_key: str = Field(..., min_length=1)
+    experiments: List[ExperimentDefinition] = Field(
+        ...,
+        min_length=2,
+        description="Two or more experiments; each experiment's variants must be labeled 'A' and 'B'.",
+    )
+    kpi_transactions: bool = True
+    kpi_add_to_cart: bool = True
+
+    @model_validator(mode="after")
+    def check_each_experiment_has_a_and_b_variants(self) -> "InteractionExtractionParams":
+        # build_interaction's classification CASE WHEN looks up each
+        # experiment's 'A'/'B'-labeled variant strings specifically (falling
+        # back to '' when a label is missing) and its final WHERE clause
+        # excludes any user whose classification came out ''. A typo'd or
+        # differently-labeled variant (e.g. 'Control'/'Treatment' instead
+        # of 'A'/'B') wouldn't error -- every user in that experiment would
+        # silently classify as '' and be dropped from the result entirely.
+        for exp in self.experiments:
+            labels = {v.label for v in exp.variants}
+            if not {"A", "B"}.issubset(labels):
+                raise ValueError(
+                    f"Experiment '{exp.experiment_id}' must have variants labeled 'A' and 'B' "
+                    f"for interaction classification -- got labels {sorted(labels)}."
+                )
+        return self
+
+
+ExperimentExtractionParams = Union[
+    BinomialExtractionParams,
+    ContinuousExtractionParams,
+    SequentialExtractionParams,
+    InteractionExtractionParams,
+]
+
+
+# --- Event log extraction (process mining) ---
+
+
+class EventLogExtractionParams(BaseModel):
+    """
+    Settings for a raw GA4 event-log export shaped for process mining: one
+    row per (case, activity, timestamp) -- the standard XES-style triple --
+    plus any caller-requested attribute columns. No aggregation: downstream
+    process-mining tools (e.g. pm4py) expect row-level events, not summaries.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    case_id_col: str = Field(
+        "user_pseudo_id", description="GA4 column identifying a case (default: one case per user)."
+    )
+    activity_col: str = Field(
+        "event_name", description="GA4 column identifying an activity. Almost always 'event_name'."
+    )
+    event_names: List[str] = Field(
+        default_factory=list, description="Restrict to these event names. Empty = every event in range."
+    )
+    attribute_params: List[str] = Field(
+        default_factory=list,
+        description=(
+            "event_params keys to unnest as extra event-attribute columns "
+            "(e.g. ['page_location', 'page_title']). Only pulls each key's "
+            "string_value -- int/float/double-valued params (e.g. "
+            "ga_session_id, value, engagement_time_msec) come back NULL."
+        ),
+    )
+    filter_type: Optional[UserFilterType] = None
+    filter_value: str = ""
+
+
+# --- Time-series extraction (forecasting) ---
+
+
+class TimeSeriesMetric(str, Enum):
+    """A metric extract_timeseries can compute per day."""
+
+    VISITORS = "visitors"
+    CONVERSIONS = "conversions"
+    REVENUE = "revenue"
+    TRANSACTIONS = "transactions"
+    EVENT_COUNT = "event_count"  # count of a caller-named custom event
+
+
+class TimeSeriesExtractionParams(BaseModel):
+    """
+    Settings for a daily time-series export -- feeds ForecastingEngine's
+    date_col/conversions_col/revenue_col contract directly. Always pulled
+    at daily grain: ForecastingEngine resamples to weekly/monthly itself
+    (see foe.forecasting.operations), so pulling anything coarser here
+    would throw away information for no benefit.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    connection: BQConnectionConfig
+    date_range: DateRange
+    metrics: List[TimeSeriesMetric] = Field(..., min_length=1)
+    conversion_event: str = Field(
+        "purchase", description="Event name counted for the 'conversions' metric."
+    )
+    custom_event_name: Optional[str] = Field(
+        None, description="Required when metrics includes EVENT_COUNT -- the event to count."
+    )
+    segment_col: Optional[str] = Field(
+        None,
+        description=(
+            "Optional column to split rows by (e.g. 'device.category'), producing one row "
+            "per date+segment instead of one row per date."
+        ),
+    )
+    filter_type: Optional[UserFilterType] = None
+    filter_value: str = ""
+
+    @model_validator(mode="after")
+    def check_event_count_has_event_name(self) -> "TimeSeriesExtractionParams":
+        if TimeSeriesMetric.EVENT_COUNT in self.metrics and not self.custom_event_name:
+            raise ValueError("custom_event_name is required when metrics includes EVENT_COUNT.")
+        return self
