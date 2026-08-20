@@ -512,6 +512,23 @@ def test_build_event_log_event_filter_scopes_cases_not_rows():
     assert "INNER JOIN filtered_cases fc ON base.case_id = fc.case_id" in sql
 
 
+def test_build_event_log_contains_filter_matches_page_location():
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, filter_type=UserFilterType.CONTAINS, filter_value="/checkout"
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "params.value.string_value LIKE '%/checkout%'" in sql
+    assert "params.key = 'page_location'" in sql
+
+
+def test_build_event_log_regex_filter_matches_page_location():
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, filter_type=UserFilterType.REGEX, filter_value=r"/product/\d+"
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert r"REGEXP_CONTAINS(params.value.string_value, r'/product/\d+')" in sql
+
+
 def test_build_event_log_custom_case_and_activity_columns():
     params = EventLogExtractionParams(
         connection=CONN, date_range=RANGE, case_id_col="ga_session_id", activity_col="event_name"
@@ -524,6 +541,95 @@ def test_build_event_log_rejects_unsafe_case_id_column():
     params = EventLogExtractionParams(connection=CONN, date_range=RANGE, case_id_col="user_id; DROP TABLE x")
     with pytest.raises(ValueError):
         event_log_sql.build_event_log(params)
+
+
+def test_build_event_log_always_emits_user_id_by_default():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE)
+    sql = event_log_sql.build_event_log(params)
+    assert "user_pseudo_id AS user_id" in sql
+
+
+def test_build_event_log_include_user_id_false_omits_the_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_user_id=False)
+    sql = event_log_sql.build_event_log(params)
+    assert "AS user_id" not in sql
+
+
+def test_build_event_log_session_id_param_gives_session_level_case_id():
+    # ga_session_id isn't a flat column -- it must come from the nested
+    # event_params array, not a plain `{col} AS case_id` reference.
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, session_id_param="ga_session_id"
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "user_pseudo_id AS case_id" not in sql
+    assert "WHERE ep.key = 'ga_session_id'" in sql
+    assert "ep.value.int_value" in sql
+    assert "AS case_id" in sql
+    # user_id is still emitted separately, so a caller can build a
+    # composite (user_id + session) key downstream, the way PRoX does.
+    assert "user_pseudo_id AS user_id" in sql
+
+
+def test_build_event_log_session_id_param_and_custom_case_id_col_conflict():
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        EventLogExtractionParams(
+            connection=CONN, date_range=RANGE, session_id_param="ga_session_id", case_id_col="client_id"
+        )
+
+
+def test_build_event_log_session_id_param_still_used_in_case_filter_cte():
+    params = EventLogExtractionParams(
+        connection=CONN,
+        date_range=RANGE,
+        session_id_param="ga_session_id",
+        filter_type=UserFilterType.EVENT,
+        filter_value="purchase",
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "filtered_cases AS" in sql
+    # the filtered_cases CTE must key off the same session-level expression,
+    # not silently fall back to a flat user_pseudo_id reference.
+    assert "WHERE ep.key = 'ga_session_id'" in sql.split("filtered_cases AS")[1].split("base AS")[0]
+
+
+def test_build_event_log_include_purchase_revenue_adds_typed_revenue_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_purchase_revenue=True)
+    sql = event_log_sql.build_event_log(params)
+    assert "ecommerce.purchase_revenue AS revenue" in sql
+
+
+def test_build_event_log_numeric_attribute_params_coalesces_typed_value_slots():
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, numeric_attribute_params=["value", "engagement_time_msec"]
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "COALESCE(ep.value.double_value, ep.value.float_value, CAST(ep.value.int_value AS FLOAT64))" in sql
+    assert "WHERE ep.key = 'value'" in sql
+    assert "AS value" in sql
+    assert "AS engagement_time_msec" in sql
+    # numeric params must not go through the string_value-only reader.
+    assert "ep.value.string_value FROM UNNEST(event_params) AS ep WHERE ep.key = 'value'" not in sql
+
+
+def test_build_event_log_rejects_same_key_as_both_string_and_numeric():
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, attribute_params=["value"], numeric_attribute_params=["value"]
+    )
+    with pytest.raises(ValueError, match="disambiguate"):
+        event_log_sql.build_event_log(params)
+
+
+def test_build_event_log_string_and_numeric_attribute_params_coexist():
+    params = EventLogExtractionParams(
+        connection=CONN,
+        date_range=RANGE,
+        attribute_params=["page_location"],
+        numeric_attribute_params=["value"],
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "AS page_location" in sql
+    assert "AS value" in sql
 
 
 # --------------------------------------------------------------------- #

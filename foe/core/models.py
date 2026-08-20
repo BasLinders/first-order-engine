@@ -817,7 +817,33 @@ class EventLogExtractionParams(BaseModel):
     connection: BQConnectionConfig
     date_range: DateRange
     case_id_col: str = Field(
-        "user_pseudo_id", description="GA4 column identifying a case (default: one case per user)."
+        "user_pseudo_id",
+        description=(
+            "GA4 column identifying a case (default: one case per user, across the whole date "
+            "range). Ignored when session_id_param is set."
+        ),
+    )
+    session_id_param: Optional[str] = Field(
+        None,
+        min_length=1,
+        description=(
+            "A nested event_params key, INT-valued (e.g. 'ga_session_id'), to use as the case "
+            "identifier instead of case_id_col -- gives one case per session rather than one "
+            "case per user across the whole date range. GA4's session id isn't a flat column, "
+            "so it can't be passed via case_id_col; this builds the correlated event_params "
+            "lookup instead. Session numbers reset per user and aren't globally unique alone -- "
+            "pair with user_id (see include_user_id) to build a composite case key downstream, "
+            "the way PRoX does. Mutually exclusive with a non-default case_id_col."
+        ),
+    )
+    include_user_id: bool = Field(
+        True,
+        description=(
+            "Emit user_pseudo_id as its own 'user_id' column, separate from whatever is used as "
+            "case_id. Needed to build a composite case key (user_id + session id) downstream -- "
+            "e.g. a process-mining tool whose case-key logic expects both. Only reason to "
+            "disable: case_id_col is already user_pseudo_id and a duplicate column adds nothing."
+        ),
     )
     activity_col: str = Field(
         "event_name", description="GA4 column identifying an activity. Almost always 'event_name'."
@@ -828,14 +854,44 @@ class EventLogExtractionParams(BaseModel):
     attribute_params: List[str] = Field(
         default_factory=list,
         description=(
-            "event_params keys to unnest as extra event-attribute columns "
-            "(e.g. ['page_location', 'page_title']). Only pulls each key's "
-            "string_value -- int/float/double-valued params (e.g. "
-            "ga_session_id, value, engagement_time_msec) come back NULL."
+            "event_params keys to unnest as extra STRING event-attribute columns (e.g. "
+            "['page_location', 'page_title']). Pulls each key's string_value only -- for "
+            "int/float/double-valued params (e.g. 'value', 'engagement_time_msec'), use "
+            "numeric_attribute_params instead; string_value comes back NULL for those."
+        ),
+    )
+    numeric_attribute_params: List[str] = Field(
+        default_factory=list,
+        description=(
+            "event_params keys to unnest as extra NUMERIC (FLOAT64) event-attribute columns, "
+            "e.g. ['value', 'engagement_time_msec']. Reads whichever of "
+            "int_value/float_value/double_value is populated, instead of attribute_params' "
+            "string_value-only read (which returns NULL for every numeric param)."
+        ),
+    )
+    include_purchase_revenue: bool = Field(
+        False,
+        description=(
+            "Add a 'revenue' column from ecommerce.purchase_revenue -- GA4's flat, typed "
+            "FLOAT64 purchase-revenue field, populated directly on 'purchase' events (NULL "
+            "elsewhere). Preferred over numeric_attribute_params=['value'] for purchase revenue "
+            "specifically: it's a top-level column, not an event_params lookup, so there's no "
+            "key-matching or typing ambiguity for the field most process-mining revenue "
+            "analysis needs (AOV, revenue trend, value-based segmentation)."
         ),
     )
     filter_type: Optional[UserFilterType] = None
     filter_value: str = ""
+
+    @model_validator(mode="after")
+    def check_case_id_source(self) -> "EventLogExtractionParams":
+        if self.session_id_param and self.case_id_col != "user_pseudo_id":
+            raise ValueError(
+                "session_id_param and a custom case_id_col are mutually exclusive -- "
+                "session_id_param already determines case_id (as a session-level identifier); "
+                "leave case_id_col at its default ('user_pseudo_id') when using session_id_param."
+            )
+        return self
 
 
 # --- Time-series extraction (forecasting) ---
