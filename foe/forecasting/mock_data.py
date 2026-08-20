@@ -63,7 +63,8 @@ class MockForecastDataset:
 def _generate_marketing_spend(n_days: int, rng: np.random.Generator) -> np.ndarray:
     """Baseline spend with occasional campaign bursts (~5% of days)."""
     campaign_day = rng.random(n_days) < 0.05
-    spend = 200 + campaign_day * rng.uniform(800, 1500, n_days) + rng.normal(0, 20, n_days)
+    spend = 200 + campaign_day * \
+        rng.uniform(800, 1500, n_days) + rng.normal(0, 20, n_days)
     return np.clip(spend, 50, None)
 
 
@@ -98,9 +99,11 @@ def _apply_holidays(
                 )
             )
             for offset in range(lower_window, upper_window + 1):
-                pos = date_index.get_indexer([event_date + pd.Timedelta(days=offset)])[0]
+                pos = date_index.get_indexer(
+                    [event_date + pd.Timedelta(days=offset)])[0]
                 if pos != -1:
-                    bump[pos] += magnitude * (1.0 if offset == 0 else _HOLIDAY_WINDOW_DECAY)
+                    bump[pos] += magnitude * \
+                        (1.0 if offset == 0 else _HOLIDAY_WINDOW_DECAY)
 
     return bump, holidays
 
@@ -157,7 +160,8 @@ def generate_mock_forecast_data(
         trend + weekly + yearly + spend_effect + holiday_bump + noise, 1, None
     )
 
-    aov = 20 + 3 * np.sin(2 * np.pi * (day_of_year - 200) / 365.25) + rng.normal(0, 1.5, n_days)
+    aov = 20 + 3 * np.sin(2 * np.pi * (day_of_year - 200) / \
+                          365.25) + rng.normal(0, 1.5, n_days)
     revenue = conversions * np.clip(aov, 5, None)
 
     data = pd.DataFrame(
@@ -169,7 +173,8 @@ def generate_mock_forecast_data(
         }
     )
 
-    future_dates = pd.date_range(start=dates[-1] + pd.Timedelta(days=1), periods=periods, freq="D")
+    future_dates = pd.date_range(
+        start=dates[-1] + pd.Timedelta(days=1), periods=periods, freq="D")
     future_spend = _generate_marketing_spend(periods, rng)
     future_regressors = pd.DataFrame({"ds": future_dates, _REGRESSOR_COL: future_spend})
 

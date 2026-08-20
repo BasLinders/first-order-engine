@@ -35,7 +35,8 @@ def make_daily_df(
     if revenue_col:
         data[revenue_col] = conversions * (25 + rng.normal(0, 2, n_days))
     if regressor_col:
-        data[regressor_col] = 15 + 5 * np.sin(np.arange(n_days) / 15) + rng.normal(0, 1, n_days)
+        data[regressor_col] = 15 + 5 * \
+            np.sin(np.arange(n_days) / 15) + rng.normal(0, 1, n_days)
     return pd.DataFrame(data)
 
 
@@ -90,7 +91,8 @@ def test_config_valid_defaults():
 
 
 def test_custom_holiday_window_signs():
-    holiday = CustomHoliday(holiday="Park Event", ds="2023-06-01", lower_window=-2, upper_window=1)
+    holiday = CustomHoliday(holiday="Park Event", ds="2023-06-01",
+                            lower_window=-2, upper_window=1)
     assert holiday.lower_window == -2
     assert holiday.upper_window == 1
     with pytest.raises(ValidationError):
@@ -166,7 +168,8 @@ def test_fit_missing_column_raises():
 
 def test_fit_empty_data_raises():
     df = make_daily_df(n_days=0)
-    config = ForecastingEngineConfig(date_col="date", conversions_col="conversions", periods=7)
+    config = ForecastingEngineConfig(
+        date_col="date", conversions_col="conversions", periods=7)
     with pytest.raises(ValueError, match="empty"):
         ForecastingEngine.fit(df, config)
 
@@ -244,7 +247,8 @@ def test_fit_regressor_with_future_values_succeeds():
         periods=7,
         regressors=["temp"],
     )
-    future_dates = pd.date_range(df["date"].max() + pd.Timedelta(days=1), periods=7, freq="D")
+    future_dates = pd.date_range(
+        df["date"].max() + pd.Timedelta(days=1), periods=7, freq="D")
     future_regressors = pd.DataFrame({"ds": future_dates, "temp": 18.0})
 
     result = ForecastingEngine.fit(df, config, future_regressors=future_regressors)

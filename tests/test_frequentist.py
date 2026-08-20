@@ -275,16 +275,19 @@ def test_variance_reduction_factor_tightens_intervals(engine):
     conversions = [500, 550]
 
     standard = engine.run_synthesis(
-        ExperimentInput(visitors=visitors, conversions=conversions, reduction_factor=1.0)
+        ExperimentInput(visitors=visitors, conversions=conversions,
+                        reduction_factor=1.0)
     )[0]
 
     adjusted = engine.run_synthesis(
-        ExperimentInput(visitors=visitors, conversions=conversions, reduction_factor=0.8)
+        ExperimentInput(visitors=visitors, conversions=conversions,
+                        reduction_factor=0.8)
     )[0]
 
     # SE should be reduced by sqrt(0.8) ≈ 10.6%.
     assert adjusted.standard_error < standard.standard_error
-    assert adjusted.standard_error == pytest.approx(standard.standard_error * 0.8 ** 0.5)
+    assert adjusted.standard_error == pytest.approx(
+        standard.standard_error * 0.8 ** 0.5)
 
     # TWO_SIDED CI (default): both bounds are finite, width comparison is valid.
     std_width = standard.ci_diff[1] - standard.ci_diff[0]
@@ -345,7 +348,8 @@ def test_monetary_conclusion_formats_infinite_bound_as_unbounded(engine):
         aov=50,
         projection_period=183,
     )
-    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    conclusion = engine.generate_monetary_conclusion(
+        "Variant B", result, is_significant=True)
     assert "unbounded" in conclusion
     assert "inf" not in conclusion.replace("unbounded", "")
 
@@ -358,9 +362,11 @@ def test_monetary_conclusion_negative_point_estimate_reads_as_a_cost(engine):
         aov=50,
         projection_period=183,
     )
-    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    conclusion = engine.generate_monetary_conclusion(
+        "Variant B", result, is_significant=True)
     assert "cost" in conclusion
-    assert "-" not in conclusion.split("cost")[1].split("over")[0]  # magnitude, not a signed number
+    # magnitude, not a signed number
+    assert "-" not in conclusion.split("cost")[1].split("over")[0]
 
 
 def test_monetary_conclusion_non_significant_is_illustrative_only(engine):
@@ -371,7 +377,8 @@ def test_monetary_conclusion_non_significant_is_illustrative_only(engine):
         aov=50,
         projection_period=183,
     )
-    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=False)
+    conclusion = engine.generate_monetary_conclusion(
+        "Variant B", result, is_significant=False)
     assert "not statistically significant" in conclusion
     assert "illustrative" in conclusion
 
@@ -454,7 +461,8 @@ def test_per_variant_aov_conclusion_is_reusable(engine):
         p_chal=0.12, se_chal=0.0043, aov_chal=65.0,
         daily_visitors=1000.0,
     )
-    conclusion = engine.generate_monetary_conclusion("Variant B", result, is_significant=True)
+    conclusion = engine.generate_monetary_conclusion(
+        "Variant B", result, is_significant=True)
     assert "Variant B" in conclusion
     assert "uplift" in conclusion
 
@@ -487,8 +495,10 @@ def test_aov_uncertainty_widens_ci_and_can_flip_lower_bound_negative(engine):
     were estimated from a comparable-sized order sample) should widen the
     interval, lowering (or flipping the sign of) the lower bound.
     """
-    p_ctrl, se_ctrl = 7855 / 150000, math.sqrt((7855 / 150000) * (1 - 7855 / 150000) / 150000)
-    p_chal, se_chal = 8000 / 150200, math.sqrt((8000 / 150200) * (1 - 8000 / 150200) / 150200)
+    p_ctrl, se_ctrl = 7855 / \
+        150000, math.sqrt((7855 / 150000) * (1 - 7855 / 150000) / 150000)
+    p_chal, se_chal = 8000 / \
+        150200, math.sqrt((8000 / 150200) * (1 - 8000 / 150200) / 150200)
     daily_visitors = (150000 + 150200) / 28
 
     no_aov_uncertainty = engine.estimate_monetary_impact_per_variant(
@@ -511,7 +521,8 @@ def test_aov_uncertainty_widens_ci_and_can_flip_lower_bound_negative(engine):
     )
 
     # Point estimate (the value-weighted diff itself) is unaffected by SE.
-    assert with_aov_uncertainty["point_estimate"] == pytest.approx(no_aov_uncertainty["point_estimate"])
+    assert with_aov_uncertainty["point_estimate"] == pytest.approx(
+        no_aov_uncertainty["point_estimate"])
     # But propagating AOV's own uncertainty must push the one-sided lower
     # bound down (a wider, more honest interval), not up.
     assert with_aov_uncertainty["ci_low"] < no_aov_uncertainty["ci_low"]

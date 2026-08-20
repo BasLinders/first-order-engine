@@ -342,7 +342,8 @@ class ForecastingEngine:
         last_ds = train_df["ds"].max()
         future_index = cls._future_index(last_ds, config.periods, config.granularity)
         for reg in regressor_cols:
-            cls._validate_regressor_horizon_coverage(reg, future_regressors, future_index)
+            cls._validate_regressor_horizon_coverage(
+                reg, future_regressors, future_index)
 
         future = m.make_future_dataframe(
             periods=config.periods, freq=_GRANULARITY_FREQ[config.granularity]

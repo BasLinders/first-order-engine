@@ -428,12 +428,14 @@ class ForecastingEngineConfig(BaseModel):
                 "At least one of conversions_col or revenue_col must be set."
             )
         if self.conversions_col and self.conversions_col == self.revenue_col:
-            raise ValueError("conversions_col and revenue_col must be different columns.")
+            raise ValueError(
+                "conversions_col and revenue_col must be different columns.")
         if self.growth == GrowthMode.LOGISTIC:
             if self.cap is None:
                 raise ValueError("cap is required when growth='logistic'.")
             if self.floor is not None and self.floor >= self.cap:
-                raise ValueError(f"floor ({self.floor}) must be less than cap ({self.cap}).")
+                raise ValueError(
+                    f"floor ({self.floor}) must be less than cap ({self.cap}).")
         return self
 
 
@@ -656,7 +658,8 @@ class BaselineExtractionParams(BaseModel):
             self.output_shape == BaselineOutputShape.PER_USER
             and self.output_type != BaselineOutputType.REVENUE
         ):
-            raise ValueError("output_shape='per_user' is only meaningful for output_type='revenue'.")
+            raise ValueError(
+                "output_shape='per_user' is only meaningful for output_type='revenue'.")
         return self
 
 
@@ -940,5 +943,6 @@ class TimeSeriesExtractionParams(BaseModel):
     @model_validator(mode="after")
     def check_event_count_has_event_name(self) -> "TimeSeriesExtractionParams":
         if TimeSeriesMetric.EVENT_COUNT in self.metrics and not self.custom_event_name:
-            raise ValueError("custom_event_name is required when metrics includes EVENT_COUNT.")
+            raise ValueError(
+                "custom_event_name is required when metrics includes EVENT_COUNT.")
         return self

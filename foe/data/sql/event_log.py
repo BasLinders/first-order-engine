@@ -84,7 +84,8 @@ def _attribute_columns(seen_aliases: Dict[str, Tuple[str, str]], keys: list, kin
     field_label = "numeric_attribute_params" if kind == "numeric" else "attribute_params"
     select = ""
     for key in keys:
-        alias = validate_identifier(key.replace(".", "_"), field_name=f"{field_label} entry")
+        alias = validate_identifier(key.replace(
+            ".", "_"), field_name=f"{field_label} entry")
         if alias in seen_aliases:
             prev_key, prev_kind = seen_aliases[alias]
             if prev_key == key and prev_kind == kind:
@@ -107,7 +108,8 @@ def _attribute_columns(seen_aliases: Dict[str, Tuple[str, str]], keys: list, kin
 
 def build_event_log(p: EventLogExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     activity_col = validate_identifier(p.activity_col, field_name="activity_col")
 
     if p.session_id_param:
@@ -133,7 +135,8 @@ def build_event_log(p: EventLogExtractionParams, limit: int = 0) -> str:
 
     seen_aliases: Dict[str, Tuple[str, str]] = {}
     attribute_select = _attribute_columns(seen_aliases, p.attribute_params, "string")
-    attribute_select += _attribute_columns(seen_aliases, p.numeric_attribute_params, "numeric")
+    attribute_select += _attribute_columns(seen_aliases,
+                                           p.numeric_attribute_params, "numeric")
 
     filter_cte, filter_join = _case_filter_cte(p, table, suffix, case_id_expr)
     limit_clause = f"\nLIMIT {limit}" if limit else ""

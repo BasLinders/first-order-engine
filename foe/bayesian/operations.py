@@ -269,16 +269,19 @@ class BayesianEngine:
         results = []
         for i in range(1, num_variants):
             challenger_samples = samples[i]
-            w = self._compute_lift_weights(control_samples, challenger_samples, lift_prior)
+            w = self._compute_lift_weights(
+                control_samples, challenger_samples, lift_prior)
 
             prob_beat_control = float(
                 np.average(challenger_samples > control_samples, weights=w)
             )
             expected_uplift = float(
-                np.average(np.maximum(challenger_samples - control_samples, 0), weights=w)
+                np.average(np.maximum(challenger_samples - \
+                           control_samples, 0), weights=w)
             )
             expected_loss = float(
-                np.average(np.maximum(control_samples - challenger_samples, 0), weights=w)
+                np.average(np.maximum(control_samples - \
+                           challenger_samples, 0), weights=w)
             )
             prob_best = float(prob_best_overall[i])
 
@@ -332,7 +335,8 @@ class BayesianEngine:
             )
 
         # (num_variants, n_simulations)
-        samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
+        samples = self._sample_posteriors(
+            visitors, conversions, beta_prior, n_simulations)
         daily_vol = (
             samples * np.array(visitors)[:, np.newaxis]
         ) / biz_case.runtime_days

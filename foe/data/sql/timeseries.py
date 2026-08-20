@@ -58,7 +58,8 @@ filtered_users AS (
 
 def build_timeseries(p: TimeSeriesExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     user_filter_cte, join_clause = _segment_user_filter(p, table, suffix)
 
     segment_select = ""

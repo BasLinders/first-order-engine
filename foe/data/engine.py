@@ -193,7 +193,8 @@ class DataEngine:
         """
         _require_bigquery_deps()
         config = _client_config(client_id, client_secret, redirect_uri)
-        flow = _Flow.from_client_config(config, scopes=scopes or DEFAULT_SCOPES, redirect_uri=redirect_uri)
+        flow = _Flow.from_client_config(
+            config, scopes=scopes or DEFAULT_SCOPES, redirect_uri=redirect_uri)
 
         auth_url, _ = flow.authorization_url(
             access_type="offline",
@@ -253,7 +254,8 @@ class DataEngine:
         extra_state = state_data.get("extra", {}) or {}
 
         config = _client_config(client_id, client_secret, redirect_uri)
-        flow = _Flow.from_client_config(config, scopes=DEFAULT_SCOPES, redirect_uri=redirect_uri)
+        flow = _Flow.from_client_config(
+            config, scopes=DEFAULT_SCOPES, redirect_uri=redirect_uri)
         fetch_kwargs = {"code": code}
         if verifier:
             fetch_kwargs["code_verifier"] = verifier
@@ -345,7 +347,8 @@ class DataEngine:
             )
         except Exception as e:
             err_str = str(e)
-            is_dml = any(kw in err_str.upper() for kw in ("DDL", "DML", "SCRIPT", "CREATE", "INSERT"))
+            is_dml = any(kw in err_str.upper()
+                         for kw in ("DDL", "DML", "SCRIPT", "CREATE", "INSERT"))
             return QueryCostEstimate(
                 bytes_processed=0,
                 gb_processed=0.0,
@@ -381,7 +384,8 @@ class DataEngine:
         """Runs `sql` against an existing BigQuery session (e.g. to read a TEMP
         TABLE created by create_scan_session)."""
         job_config = _bigquery.QueryJobConfig(
-            connection_properties=[_bigquery.ConnectionProperty(key="session_id", value=session_id)]
+            connection_properties=[_bigquery.ConnectionProperty(
+                key="session_id", value=session_id)]
         )
         job = self._client.query(sql, job_config=job_config)
         return job.result().to_dataframe()
@@ -448,7 +452,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         """INFORMATION_SCHEMA region prefix for a dataset's location, e.g. 'EU' -> 'region-eu'.
         Falls back to 'region-eu' on error."""
         try:
-            ds = self._client.get_dataset(f"{project or self._client.project}.{dataset_id}")
+            ds = self._client.get_dataset(
+                f"{project or self._client.project}.{dataset_id}")
             return f"region-{ds.location.lower()}"
         except Exception:
             return "region-eu"
@@ -508,7 +513,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
                 )
 
         anchor = binomial or continuous
-        need_page_location, need_payment_type = _experiments_sql.experiment_shared_scan_flags(binomial, continuous)
+        need_page_location, need_payment_type = _experiments_sql.experiment_shared_scan_flags(
+            binomial, continuous)
         shared_select = _experiments_sql.build_shared_scan_select(
             anchor.connection.project,
             anchor.connection.dataset,
@@ -520,7 +526,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         )
 
         if binomial is not None and continuous is not None:
-            temp_table_sql = _experiments_sql.build_experiment_shared_scan_temp_table_sql(shared_select)
+            temp_table_sql = _experiments_sql.build_experiment_shared_scan_temp_table_sql(
+                shared_select)
             select_sqls = {
                 "binomial": _experiments_sql.build_experiment_session_output_sql(
                     _experiments_sql.build_binomial_from_shared_scan(binomial), limit=limit
@@ -536,7 +543,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
             if binomial is not None
             else _experiments_sql.build_continuous_from_shared_scan(continuous)
         )
-        sql = _experiments_sql.build_experiment_single_output_sql(shared_select, cte_chain, limit=limit)
+        sql = _experiments_sql.build_experiment_single_output_sql(
+            shared_select, cte_chain, limit=limit)
         label = "binomial" if binomial is not None else "continuous"
         return {label: self.run(sql)}
 
@@ -566,9 +574,11 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         prefix: str,
         sample_days: int = 1,
     ) -> List[str]:
-        sample_start, sample_end = _sample_recent_window(start_date, end_date, sample_days)
+        sample_start, sample_end = _sample_recent_window(
+            start_date, end_date, sample_days)
         sql = _experiments_sql.build_autodetect_variants_query(
-            connection.project, connection.dataset, sample_start.isoformat(), sample_end.isoformat(), param_key, prefix
+            connection.project, connection.dataset, sample_start.isoformat(
+            ), sample_end.isoformat(), param_key, prefix
         )
         df = self.run(sql)
         return df["variant_string"].tolist() if not df.empty else []
@@ -581,7 +591,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         limit: int = 100,
         sample_days: int = 2,
     ) -> List[str]:
-        sample_start, sample_end = _sample_recent_window(start_date, end_date, sample_days)
+        sample_start, sample_end = _sample_recent_window(
+            start_date, end_date, sample_days)
         sql = _experiments_sql.build_autodetect_event_names_query(
             connection.project, connection.dataset, sample_start.isoformat(), sample_end.isoformat(), limit
         )
@@ -591,7 +602,8 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
     def autodetect_kpis(
         self, connection: BQConnectionConfig, start_date: date, end_date: date, sample_days: int = 2
     ) -> List[str]:
-        sample_start, sample_end = _sample_recent_window(start_date, end_date, sample_days)
+        sample_start, sample_end = _sample_recent_window(
+            start_date, end_date, sample_days)
         sql = _experiments_sql.build_autodetect_kpi_query(
             connection.project, connection.dataset, sample_start.isoformat(), sample_end.isoformat()
         )

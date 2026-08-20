@@ -335,12 +335,14 @@ class ContinuousMetricEngine:
         """
         data = work[kpi].to_numpy(dtype=float)
         n = data.size
-        dummies = pd.get_dummies(work[group_col].astype(str), drop_first=True).to_numpy(dtype=float)
+        dummies = pd.get_dummies(work[group_col].astype(
+            str), drop_first=True).to_numpy(dtype=float)
 
         exog_null = np.ones((n, 1))
         ll_null, _, _ = ContinuousMetricEngine.fit_negbin(data, exog_null)
 
-        exog_alt = np.column_stack([np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
+        exog_alt = np.column_stack(
+            [np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
         ll_alt, alpha_alt, _ = ContinuousMetricEngine.fit_negbin(data, exog_alt)
 
         if not (np.isfinite(ll_null) and np.isfinite(ll_alt)):
@@ -623,7 +625,8 @@ class ContinuousMetricEngine:
         posthoc = None
         if p_value < alpha and num_groups > 2:
             if control_label:
-                posthoc = self.run_negbin_posthoc(work, kpi, group_col, control_label, alpha)
+                posthoc = self.run_negbin_posthoc(
+                    work, kpi, group_col, control_label, alpha)
             else:
                 warnings.append(
                     "Global Negative Binomial test is significant with 3+ groups, "
@@ -695,8 +698,10 @@ class ContinuousMetricEngine:
         se_mean_chal = (std_chal / math.sqrt(n_chal)) if n_chal > 0 else 0.0
 
         diff_value = (rate_chal * mean_chal) - (rate_ctrl * mean_ctrl)
-        var_chal = (mean_chal ** 2) * (se_rate_chal ** 2) + (rate_chal ** 2) * (se_mean_chal ** 2)
-        var_ctrl = (mean_ctrl ** 2) * (se_rate_ctrl ** 2) + (rate_ctrl ** 2) * (se_mean_ctrl ** 2)
+        var_chal = (mean_chal ** 2) * (se_rate_chal ** 2) + \
+                    (rate_chal ** 2) * (se_mean_chal ** 2)
+        var_ctrl = (mean_ctrl ** 2) * (se_rate_ctrl ** 2) + \
+                    (rate_ctrl ** 2) * (se_mean_ctrl ** 2)
         se_diff_value = math.sqrt(var_chal + var_ctrl)
 
         ci_diff_value = compute_interval_difference(
@@ -766,7 +771,8 @@ class ContinuousMetricEngine:
                 continue
             monetary = self.estimate_monetary_impact_per_variant(
                 mean_ctrl=ctrl["mean"], std_ctrl=ctrl["std"], n_ctrl=int(ctrl["count"]),
-                mean_chal=stats_["mean"], std_chal=stats_["std"], n_chal=int(stats_["count"]),
+                mean_chal=stats_["mean"], std_chal=stats_[
+                    "std"], n_chal=int(stats_["count"]),
                 unit=unit,
                 daily_visitors=daily_visitors,
                 visitors_ctrl=visitor_counts.get(control_label),
