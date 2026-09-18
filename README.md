@@ -20,7 +20,7 @@ FOE is one half of a two-repository system. The separation of concerns is delibe
 | Repository | Role |
 |---|---|
 | **`first-order-engine`** *(this repo)* | Pure Python library. Statistical computation only, plus one opt-in exception: `foe.data` (BigQuery/GA4 extraction — see below), gated behind an extra and never imported by the stats engines. |
-| [`first-order-pipeline`](https://github.com/BasLinders/first-order-pipeline) | ETL pipeline. Fetches data from BigQuery, imports FOE, runs the engines, pushes results to Airtable. |
+| [`first-order-pipeline`](https://github.com/BasLinders/first-order-pipeline) | ETL pipeline. Fetches data from BigQuery, imports FOE, runs the engines, pushes results to Airtable (DEFERRED). |
 
 The pipeline repo installs FOE as a dependency (`pip install git+https://github.com/BasLinders/first-order-engine.git@main`) and calls it like any other Python package. The stats engines (`foe.frequentist`, `foe.bayesian`, `foe.sequential`, etc.) never know or care that BigQuery or Airtable exist — `foe.data.DataEngine` is how a caller *gets* data into a shape those engines accept, not something the engines depend on.
 
