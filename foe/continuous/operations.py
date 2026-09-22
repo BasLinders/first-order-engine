@@ -338,18 +338,30 @@ class ContinuousMetricEngine:
         dummies = pd.get_dummies(work[group_col].astype(str), drop_first=True).to_numpy(dtype=float)
 
         exog_null = np.ones((n, 1))
-        ll_null, _, _ = ContinuousMetricEngine.fit_negbin(data, exog_null)
+        ll_null, _, res_null = ContinuousMetricEngine.fit_negbin(data, exog_null)
 
         exog_alt = np.column_stack([np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
-        ll_alt, alpha_alt, _ = ContinuousMetricEngine.fit_negbin(data, exog_alt)
+        ll_alt, alpha_alt, res_alt = ContinuousMetricEngine.fit_negbin(data, exog_alt)
 
-        if not (np.isfinite(ll_null) and np.isfinite(ll_alt)):
-            # Degenerate/tiny samples can fail to converge to a finite
-            # log-likelihood; the caller treats this the same as any other
-            # unfittable model (p=1.0, with a warning) rather than letting a
-            # nan leak into the p_value field's [0, 1] constraint.
+        # Degenerate/tiny samples can fail to converge to a finite log-likelihood on some
+        # solver versions -- but a tiny sample that perfectly separates the groups (e.g. one
+        # group all-zero, another all-one) instead lets the dummy coefficient run toward
+        # +/-infinity while the optimizer still reports a finite log-likelihood and
+        # "converged": the fit isn't actually identified, just numerically unbounded. The
+        # Hessian is singular at that point, so standard errors can't be computed -- bse comes
+        # back all-NaN -- which is a solver-version-independent signal of that pathology,
+        # unlike checking the log-likelihood's finiteness alone. Both checks are kept: either
+        # is grounds to treat this the same as any other unfittable model (p=1.0, with a
+        # warning) rather than letting a nan or a spurious near-zero p_value leak out.
+        if (
+            not (np.isfinite(ll_null) and np.isfinite(ll_alt))
+            or not np.all(np.isfinite(res_null.bse))
+            or not np.all(np.isfinite(res_alt.bse))
+        ):
             raise ValueError(
-                "Negative Binomial model did not converge to a finite log-likelihood."
+                "Negative Binomial model did not converge to a well-identified fit -- "
+                "non-finite log-likelihood, or standard errors could not be computed "
+                "(a common symptom of quasi/complete separation in a tiny or degenerate sample)."
             )
 
         df_diff = exog_alt.shape[1] - exog_null.shape[1]
