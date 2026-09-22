@@ -880,6 +880,28 @@ class EventLogExtractionParams(BaseModel):
             "analysis needs (AOV, revenue trend, value-based segmentation)."
         ),
     )
+    include_device: bool = Field(
+        False, description="Add a 'device_category' column from device.category (e.g. 'desktop', 'mobile')."
+    )
+    include_traffic_source: bool = Field(
+        False,
+        description=(
+            "Add 'traffic_source' and 'traffic_medium' columns for session-level attribution. "
+            "Reads session_traffic_source_last_click.manual_campaign.{source,medium} (session-"
+            "scoped last-click, the more correct source for a session_id_param extraction) with "
+            "a COALESCE fallback to the event-level traffic_source.{source,medium} struct, which "
+            "is present in every GA4 export schema version -- session_traffic_source_last_click "
+            "was added later and would otherwise come back NULL against an older export."
+        ),
+    )
+    include_item_category: bool = Field(
+        False,
+        description=(
+            "Add a 'category' column: the first item's item_category from the repeated `items` "
+            "field. Matches the expression PRoX's own static SQL template uses for CSV-export "
+            "users, so both of PRoX's GA4 data paths agree on this column."
+        ),
+    )
     filter_type: Optional[UserFilterType] = None
     filter_value: str = ""
 
@@ -890,6 +912,21 @@ class EventLogExtractionParams(BaseModel):
                 "session_id_param and a custom case_id_col are mutually exclusive -- "
                 "session_id_param already determines case_id (as a session-level identifier); "
                 "leave case_id_col at its default ('user_pseudo_id') when using session_id_param."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_purchase_revenue_needs_purchase_event(self) -> "EventLogExtractionParams":
+        # GA4 only ever populates ecommerce.purchase_revenue on 'purchase' events -- if
+        # event_names is restricted and doesn't include it, every returned row would carry
+        # revenue=NULL, which reads as "the column is broken" rather than "the event that
+        # carries it was filtered out".
+        if self.include_purchase_revenue and self.event_names and "purchase" not in self.event_names:
+            raise ValueError(
+                "include_purchase_revenue=True but event_names is restricted and doesn't "
+                "include 'purchase' -- GA4 only populates ecommerce.purchase_revenue on "
+                "'purchase' events, so every extracted row would come back with revenue=NULL. "
+                "Add 'purchase' to event_names, or drop include_purchase_revenue."
             )
         return self
 
