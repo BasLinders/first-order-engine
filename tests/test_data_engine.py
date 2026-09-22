@@ -632,6 +632,130 @@ def test_build_event_log_string_and_numeric_attribute_params_coexist():
     assert "AS value" in sql
 
 
+def test_build_event_log_purchase_revenue_requires_purchase_in_restricted_event_names():
+    # GA4 only ever populates ecommerce.purchase_revenue on 'purchase' events -- if it's
+    # filtered out of event_names, revenue would come back NULL for every row, which reads as
+    # "the column is broken" rather than "the event that carries it wasn't requested".
+    with pytest.raises(ValidationError, match="doesn't include 'purchase'"):
+        EventLogExtractionParams(
+            connection=CONN,
+            date_range=RANGE,
+            include_purchase_revenue=True,
+            event_names=["page_view", "add_to_cart"],
+        )
+
+
+def test_build_event_log_purchase_revenue_allows_unrestricted_event_names():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_purchase_revenue=True)
+    sql = event_log_sql.build_event_log(params)
+    assert "ecommerce.purchase_revenue AS revenue" in sql
+
+
+def test_build_event_log_purchase_revenue_allows_purchase_in_event_names():
+    params = EventLogExtractionParams(
+        connection=CONN,
+        date_range=RANGE,
+        include_purchase_revenue=True,
+        event_names=["purchase", "page_view"],
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "ecommerce.purchase_revenue AS revenue" in sql
+
+
+def test_build_event_log_include_device_adds_device_category_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=True)
+    sql = event_log_sql.build_event_log(params)
+    assert "device.category AS device_category" in sql
+
+
+def test_build_event_log_include_device_false_omits_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=False)
+    sql = event_log_sql.build_event_log(params)
+    assert "device_category" not in sql
+
+
+def test_build_event_log_include_traffic_source_prefers_session_last_click_with_fallback():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_traffic_source=True)
+    sql = event_log_sql.build_event_log(params)
+    assert (
+        "COALESCE(session_traffic_source_last_click.manual_campaign.source, traffic_source.source) "
+        "AS traffic_source" in sql
+    )
+    assert (
+        "COALESCE(session_traffic_source_last_click.manual_campaign.medium, traffic_source.medium) "
+        "AS traffic_medium" in sql
+    )
+
+
+def test_build_event_log_include_traffic_source_false_omits_columns():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_traffic_source=False)
+    sql = event_log_sql.build_event_log(params)
+    assert "traffic_source" not in sql
+    assert "traffic_medium" not in sql
+
+
+def test_build_event_log_include_item_category_matches_prox_static_sql_expression():
+    # PRoX's own static SQL template (main.py, CSV-export users) uses this exact expression --
+    # matching it keeps both of PRoX's GA4 data paths consistent.
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_item_category=True)
+    sql = event_log_sql.build_event_log(params)
+    assert "(SELECT item_category FROM UNNEST(items) LIMIT 1) AS category" in sql
+
+
+def test_build_event_log_include_item_category_false_omits_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_item_category=False)
+    sql = event_log_sql.build_event_log(params)
+    assert "item_category" not in sql
+
+
+def test_build_event_log_segment_flags_coexist_with_revenue_and_attributes():
+    params = EventLogExtractionParams(
+        connection=CONN,
+        date_range=RANGE,
+        include_purchase_revenue=True,
+        include_device=True,
+        include_traffic_source=True,
+        include_item_category=True,
+        attribute_params=["page_location"],
+    )
+    sql = event_log_sql.build_event_log(params)
+    assert "ecommerce.purchase_revenue AS revenue" in sql
+    assert "device.category AS device_category" in sql
+    assert "AS traffic_source" in sql
+    assert "AS category" in sql
+    assert "AS page_location" in sql
+
+
+# --------------------------------------------------------------------- #
+#  build_event_log_preview (cheap column-sample query)
+# --------------------------------------------------------------------- #
+
+
+def test_build_event_log_preview_caps_rows_and_narrows_date_window():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=True)
+    sql = event_log_sql.build_event_log_preview(params, sample_rows=20, sample_days=1)
+    assert "LIMIT 20" in sql
+    assert "device.category AS device_category" in sql
+    # RANGE spans 2026-01-01..2026-01-31; a 1-day sample window should scope to end_date only.
+    assert "PARSE_DATE('%Y-%m-%d', '2026-01-31')" in sql
+    assert sql.count("PARSE_DATE('%Y-%m-%d', '2026-01-01')") == 0
+
+
+def test_build_event_log_preview_hard_caps_sample_rows_regardless_of_caller_input():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE)
+    sql = event_log_sql.build_event_log_preview(params, sample_rows=10_000)
+    assert "LIMIT 50" in sql
+    assert "LIMIT 10000" not in sql
+
+
+def test_build_event_log_preview_window_never_precedes_original_start_date():
+    narrow_range = DateRange(start_date=date(2026, 1, 30), end_date=date(2026, 1, 31))
+    params = EventLogExtractionParams(connection=CONN, date_range=narrow_range)
+    sql = event_log_sql.build_event_log_preview(params, sample_days=5)
+    assert "PARSE_DATE('%Y-%m-%d', '2026-01-30')" in sql
+    assert "PARSE_DATE('%Y-%m-%d', '2026-01-29')" not in sql
+
+
 # --------------------------------------------------------------------- #
 #  TimeSeriesExtractionParams / build_timeseries (forecasting input)
 # --------------------------------------------------------------------- #

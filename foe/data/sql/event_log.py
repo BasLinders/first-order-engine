@@ -23,14 +23,23 @@ event_params' string_value, so numeric params (e.g. 'value', GA4's
 event-level monetary value) come back NULL through it. Use
 numeric_attribute_params for those, or include_purchase_revenue for the
 common case of purchase revenue specifically (a flat, already-typed
-FLOAT64 column that doesn't touch event_params at all).
+FLOAT64 column that doesn't touch event_params at all). NULL revenue on
+non-purchase rows is expected GA4 behavior, not a bug -- GA4 only ever
+populates ecommerce.purchase_revenue on 'purchase' events.
+
+Standard GA4 segment dimensions (device, traffic source, item category)
+live outside event_params entirely -- top-level structs and a repeated
+field, not attribute keys -- so they get their own include_* flags rather
+than going through attribute_params/numeric_attribute_params:
+include_device, include_traffic_source, include_item_category.
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Dict, Tuple
 
-from foe.core.models import EventLogExtractionParams, UserFilterType
+from foe.core.models import DateRange, EventLogExtractionParams, UserFilterType
 from .ga4 import escape_literal, escape_raw_string_literal, suffix_filter, table_ref, validate_identifier
 
 _esc = escape_literal
@@ -130,6 +139,20 @@ def build_event_log(p: EventLogExtractionParams, limit: int = 0) -> str:
 
     user_id_select = ",\n    user_pseudo_id AS user_id" if p.include_user_id else ""
     revenue_select = ",\n    ecommerce.purchase_revenue AS revenue" if p.include_purchase_revenue else ""
+    device_select = ",\n    device.category AS device_category" if p.include_device else ""
+    traffic_source_select = (
+        ",\n    COALESCE(session_traffic_source_last_click.manual_campaign.source, traffic_source.source) "
+        "AS traffic_source"
+        ",\n    COALESCE(session_traffic_source_last_click.manual_campaign.medium, traffic_source.medium) "
+        "AS traffic_medium"
+        if p.include_traffic_source
+        else ""
+    )
+    item_category_select = (
+        ",\n    (SELECT item_category FROM UNNEST(items) LIMIT 1) AS category"
+        if p.include_item_category
+        else ""
+    )
 
     seen_aliases: Dict[str, Tuple[str, str]] = {}
     attribute_select = _attribute_columns(seen_aliases, p.attribute_params, "string")
@@ -144,7 +167,7 @@ base AS (
   SELECT
     {case_id_expr} AS case_id,
     {activity_col} AS activity,
-    TIMESTAMP_MICROS(event_timestamp) AS timestamp{user_id_select}{revenue_select}{attribute_select}
+    TIMESTAMP_MICROS(event_timestamp) AS timestamp{user_id_select}{revenue_select}{device_select}{traffic_source_select}{item_category_select}{attribute_select}
   FROM {table}
   WHERE {suffix}{event_filter}
 )
@@ -155,3 +178,26 @@ FROM base
 WHERE base.case_id IS NOT NULL
 ORDER BY base.case_id, base.timestamp{limit_clause};
 """
+
+
+def build_event_log_preview(p: EventLogExtractionParams, sample_rows: int = 20, sample_days: int = 1) -> str:
+    """
+    The same SQL build_event_log() would build for `p`'s requested columns, capped to a cheap
+    preview: narrowed to the last `sample_days` day(s) of p.date_range and LIMITed to
+    `sample_rows`, both hard-capped regardless of caller input -- this is meant to run
+    automatically/eagerly in a UI (DataEngine.preview_columns), not on an explicit "Extract
+    Data" click.
+
+    Narrowing the date window, not just the row count, is the actual cost lever here: BigQuery
+    bills a wildcard-table scan (`events_*`) by bytes read across every matched
+    events_YYYYMMDD shard regardless of a trailing LIMIT, so LIMIT alone wouldn't shrink cost
+    for a wide date range the way it would on a single non-partitioned table. TABLESAMPLE
+    SYSTEM would reduce it further, but BigQuery does not support TABLESAMPLE on wildcard
+    tables, so narrowing _TABLE_SUFFIX (the same recent-window trick DataEngine's
+    autodetect_variants/autodetect_event_names/autodetect_kpis already use) is the only lever
+    actually available against this table shape.
+    """
+    sample_rows = max(1, min(sample_rows, 50))
+    sample_start = max(p.date_range.end_date - timedelta(days=sample_days), p.date_range.start_date)
+    narrowed = p.model_copy(update={"date_range": DateRange(start_date=sample_start, end_date=p.date_range.end_date)})
+    return build_event_log(narrowed, limit=sample_rows)

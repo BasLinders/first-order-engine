@@ -544,6 +544,20 @@ WHERE DATE(creation_time) >= DATE_TRUNC(CURRENT_DATE(), MONTH)
         """Raw GA4 event rows shaped for process mining (one row per case/activity/timestamp)."""
         return self.run(_event_log_sql.build_event_log(params, limit=limit))
 
+    def preview_columns(
+        self, params: EventLogExtractionParams, sample_rows: int = 20, sample_days: int = 1
+    ) -> pd.DataFrame:
+        """
+        Cheap sample of build_event_log()'s output columns, for a caller to check data is
+        actually present before committing to a full extract_event_log() run -- meant to run
+        eagerly in a UI, unlike the explicit extraction call, so the row count and scanned
+        window are both capped hard rather than left caller-unbounded (see
+        build_event_log_preview for why: LIMIT alone doesn't shrink what a wildcard-table scan
+        bills, and BigQuery doesn't support TABLESAMPLE on wildcard tables).
+        """
+        sql = _event_log_sql.build_event_log_preview(params, sample_rows=sample_rows, sample_days=sample_days)
+        return self.run(sql)
+
     def extract_timeseries(self, params: TimeSeriesExtractionParams, limit: int = 0) -> pd.DataFrame:
         """Daily time series for ForecastingEngine's date_col/conversions_col/revenue_col contract."""
         return self.run(_timeseries_sql.build_timeseries(params, limit=limit))
