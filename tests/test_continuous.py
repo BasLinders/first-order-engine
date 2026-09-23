@@ -293,7 +293,8 @@ def test_gamma_three_groups_significant_without_control_label_warns(engine):
         "Winner": rng.gamma(shape=2.0, scale=35.0, size=n),
         "BigWinner": rng.gamma(shape=2.0, scale=45.0, size=n),
     })
-    config = ContinuousMetricConfig(kpi="revenue", approach=ContinuousApproach.GAMMA_GLM)
+    config = ContinuousMetricConfig(
+        kpi="revenue", approach=ContinuousApproach.GAMMA_GLM)
     result = engine.run_comparison_suite(df, config)
 
     assert result.posthoc_results is None
@@ -317,7 +318,8 @@ def test_negbin_two_groups_detects_winner(engine):
         "Control": rng.negative_binomial(n=3, p=3 / (3 + 1.5), size=n).astype(float),
         "Winner": rng.negative_binomial(n=3, p=3 / (3 + 2.5), size=n).astype(float),
     }, kpi="items")
-    config = ContinuousMetricConfig(kpi="items", unit=AnalysisUnit.PER_VISITOR, control_label="Control")
+    config = ContinuousMetricConfig(
+        kpi="items", unit=AnalysisUnit.PER_VISITOR, control_label="Control")
     result = engine.run_comparison_suite(df, config)
 
     assert result.test_name == "Negative Binomial Regression (LRT)"
@@ -357,7 +359,8 @@ def test_negbin_three_groups_triggers_posthoc(engine):
         "Winner": rng.negative_binomial(n=3, p=3 / (3 + 2.0), size=n).astype(float),
         "BigWinner": rng.negative_binomial(n=3, p=3 / (3 + 3.0), size=n).astype(float),
     }, kpi="items")
-    config = ContinuousMetricConfig(kpi="items", unit=AnalysisUnit.PER_VISITOR, control_label="Control")
+    config = ContinuousMetricConfig(
+        kpi="items", unit=AnalysisUnit.PER_VISITOR, control_label="Control")
     result = engine.run_comparison_suite(df, config)
 
     assert result.is_significant is True
@@ -428,7 +431,8 @@ def test_negbin_gate_thresholds_are_configurable(engine):
         "B": rng.integers(0, 80, n).astype(float),
     }, kpi="tickets")
 
-    default_result = engine.run_comparison_suite(df, ContinuousMetricConfig(kpi="tickets"))
+    default_result = engine.run_comparison_suite(
+        df, ContinuousMetricConfig(kpi="tickets"))
     custom_result = engine.run_comparison_suite(
         df, ContinuousMetricConfig(kpi="tickets", count_max_unique=100)
     )
@@ -442,7 +446,8 @@ def test_negbin_gate_thresholds_are_configurable(engine):
 
 
 def test_is_count_kpi_true_for_small_integer_range(engine):
-    assert ContinuousMetricEngine.is_count_kpi(pd.Series([0, 1, 2, 3, 1, 2, 0, 4])) is True
+    assert ContinuousMetricEngine.is_count_kpi(
+        pd.Series([0, 1, 2, 3, 1, 2, 0, 4])) is True
 
 
 def test_is_count_kpi_false_for_negative_values(engine):
@@ -469,7 +474,8 @@ def test_is_count_kpi_ratio_threshold_overrides_absolute_cap(engine):
     absolute terms but few relative to total rows).
     """
     s = pd.Series(list(range(60)) * 100)  # 60 distinct values, 6000 rows -> ratio 0.01
-    assert ContinuousMetricEngine.is_count_kpi(s, max_unique_for_check=50, max_unique_ratio=0.05) is True
+    assert ContinuousMetricEngine.is_count_kpi(
+        s, max_unique_for_check=50, max_unique_ratio=0.05) is True
 
 
 # --------------------------------------------------------------------- #
@@ -535,7 +541,8 @@ def test_gamma_rejects_negative_values(engine):
     df = make_df({"A": [-5.0, 1.0, 2.0], "B": [1.0, 2.0, 3.0]})
     with pytest.raises(ValueError, match="non-negative values"):
         engine.run_comparison_suite(
-            df, ContinuousMetricConfig(kpi="revenue", approach=ContinuousApproach.GAMMA_GLM)
+            df, ContinuousMetricConfig(
+                kpi="revenue", approach=ContinuousApproach.GAMMA_GLM)
         )
 
 
@@ -651,14 +658,16 @@ def test_fit_gamma_recovers_known_shape_and_scale(engine):
 
 def test_fit_unit_model_per_transaction_degenerate_returns_nan(engine):
     """Fewer than 2 positive values can't fit a Gamma; returns (nan, 2)."""
-    ll, n_params = ContinuousMetricEngine.fit_unit_model([5.0], AnalysisUnit.PER_TRANSACTION)
+    ll, n_params = ContinuousMetricEngine.fit_unit_model(
+        [5.0], AnalysisUnit.PER_TRANSACTION)
     assert math.isnan(ll)
     assert n_params == 2
 
 
 def test_fit_unit_model_per_visitor_all_zero_returns_bernoulli_only(engine):
     """All-zero per_visitor data has a degenerate Bernoulli (p=0) and no Gamma part."""
-    ll, n_params = ContinuousMetricEngine.fit_unit_model(np.zeros(50), AnalysisUnit.PER_VISITOR)
+    ll, n_params = ContinuousMetricEngine.fit_unit_model(
+        np.zeros(50), AnalysisUnit.PER_VISITOR)
     assert ll == 0.0
     assert n_params == 3
 
@@ -753,7 +762,8 @@ def test_negbin_posthoc_unfittable_pair_reports_non_significant(engine):
         GROUP_COL: ["Control", "Control", "Tiny", "Tiny"],
         "items": [0.0, 0.0, 1.0, 1.0],
     })
-    results = ContinuousMetricEngine.run_negbin_posthoc(df, "items", GROUP_COL, "Control")
+    results = ContinuousMetricEngine.run_negbin_posthoc(
+        df, "items", GROUP_COL, "Control")
     assert len(results) == 1
     assert results[0].comparison == "Tiny vs Control"
     assert results[0].p_value == 1.0
@@ -846,16 +856,20 @@ def test_monetary_impact_zero_n_variant_treated_as_zero_se(engine):
 
 
 def test_monetary_conclusion_positive_reads_as_gain(engine):
-    result = {"point_estimate": 292800.0, "ci_low": -2273.0, "ci_high": 587873.0, "projection_period": 183}
-    msg = ContinuousMetricEngine.generate_monetary_conclusion("Winner", result, is_significant=True)
+    result = {"point_estimate": 292800.0, "ci_low": -2273.0,
+        "ci_high": 587873.0, "projection_period": 183}
+    msg = ContinuousMetricEngine.generate_monetary_conclusion(
+        "Winner", result, is_significant=True)
     assert "gain" in msg
     assert "Winner" in msg
     assert "not statistically significant" not in msg
 
 
 def test_monetary_conclusion_negative_reads_as_loss(engine):
-    result = {"point_estimate": -100.0, "ci_low": -2273.0, "ci_high": 587873.0, "projection_period": 183}
-    msg = ContinuousMetricEngine.generate_monetary_conclusion("Loser", result, is_significant=False)
+    result = {"point_estimate": -100.0, "ci_low": -2273.0,
+        "ci_high": 587873.0, "projection_period": 183}
+    msg = ContinuousMetricEngine.generate_monetary_conclusion(
+        "Loser", result, is_significant=False)
     assert "loss" in msg
     assert "not statistically significant" in msg
 

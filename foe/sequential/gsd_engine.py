@@ -75,7 +75,8 @@ class GSDEngine:
                 p_pool = (x_var + x_ctrl) / np.maximum(n_var + n_ctrl, 1)
 
                 se = np.sqrt(
-                    p_pool * (1 - p_pool) * (1.0 / np.maximum(n_var, 1) + 1.0 / np.maximum(n_ctrl, 1))
+                    p_pool * (1 - p_pool) * (1.0 / np.maximum(n_var, 1) + \
+                              1.0 / np.maximum(n_ctrl, 1))
                 )
                 z_score = (p_var - p_ctrl) / se
 
@@ -104,23 +105,28 @@ class GSDEngine:
 
         # Defend against duplicate dates and sort
         df = df.groupby(["variant_name", "measurement_date"]).last().reset_index()
-        variants_to_test = [v for v in df["variant_name"].unique() if v != control_group_name]
+        variants_to_test = [v for v in df["variant_name"].unique()
+                                                                 if v != control_group_name]
 
         if test_type == TestType.MULTI_SAMPLE:
             if control_group_name not in df["variant_name"].values:
                 return pd.DataFrame()
 
-            ctrl_df = df[df["variant_name"] == control_group_name].set_index("measurement_date")
+            ctrl_df = df[df["variant_name"] ==
+                control_group_name].set_index("measurement_date")
 
             for variant in variants_to_test:
                 var_df = df[df["variant_name"] == variant].set_index("measurement_date")
-                merged = var_df.join(ctrl_df, how="outer", lsuffix="_var", rsuffix="_ctrl")
+                merged = var_df.join(ctrl_df, how="outer",
+                                     lsuffix="_var", rsuffix="_ctrl")
                 merged = merged.ffill().fillna(0).reset_index()
                 merged["variant_name"] = variant
 
                 # Information fraction t = Current Total Sample / Max Total Sample
-                total_current_visitors = merged["visitors_var"] + merged["visitors_ctrl"]
-                merged["info_fraction_t"] = (total_current_visitors / max_visitors).clip(upper=1.0)
+                total_current_visitors = merged["visitors_var"] + \
+                    merged["visitors_ctrl"]
+                merged["info_fraction_t"] = (
+                    total_current_visitors / max_visitors).clip(upper=1.0)
 
                 merged["z_score"] = self.calculate_gsd_z_score_vectorized(
                     n_var=merged["visitors_var"].values,
@@ -143,7 +149,8 @@ class GSDEngine:
                 merged["status"] = np.where(
                     np.abs(merged["z_score"]) >= merged["marginal_z_bound"],
                     "significant",
-                    np.where(total_current_visitors >= max_visitors, "cap_reached", "continue")
+                    np.where(total_current_visitors >= max_visitors,
+                             "cap_reached", "continue")
                 )
 
                 results.append(merged)
@@ -155,7 +162,8 @@ class GSDEngine:
             for variant in variants_to_test:
                 merged = df[df["variant_name"] == variant].copy()
 
-                merged["info_fraction_t"] = (merged["visitors"] / max_visitors).clip(upper=1.0)
+                merged["info_fraction_t"] = (
+                    merged["visitors"] / max_visitors).clip(upper=1.0)
 
                 merged["z_score"] = self.calculate_gsd_z_score_vectorized(
                     n_var=merged["visitors"].values,
@@ -174,7 +182,8 @@ class GSDEngine:
                 merged["status"] = np.where(
                     np.abs(merged["z_score"]) >= merged["marginal_z_bound"],
                     "significant",
-                    np.where(merged["visitors"] >= max_visitors, "cap_reached", "continue")
+                    np.where(merged["visitors"] >= max_visitors,
+                             "cap_reached", "continue")
                 )
 
                 results.append(merged)

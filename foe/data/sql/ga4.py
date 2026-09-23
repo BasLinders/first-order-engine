@@ -44,7 +44,8 @@ def table_ref(project: str, dataset: str) -> str:
     if not _PROJECT_ID_RE.match(project):
         raise ValueError(f"project must be a valid GCP project ID -- got {project!r}.")
     if not _DATASET_ID_RE.match(dataset):
-        raise ValueError(f"dataset must be a valid BigQuery dataset ID (letters, digits, underscore) -- got {dataset!r}.")
+        raise ValueError(
+            f"dataset must be a valid BigQuery dataset ID (letters, digits, underscore) -- got {dataset!r}.")
     return f"`{project}.{dataset}.events_*`"
 
 

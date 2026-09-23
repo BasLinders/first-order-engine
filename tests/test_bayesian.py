@@ -274,7 +274,8 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
                 runtime_days=30,
                 projection_period=90,
             ),
-            prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+            prob_best_overall=_get_prob_best_overall(
+                engine, visitors, conversions, labels),
             variant_labels=["OnlyOneLabel"],
             beta_prior=beta_prior,
             lift_prior=lift_prior,
