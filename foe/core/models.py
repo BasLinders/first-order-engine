@@ -902,6 +902,15 @@ class EventLogExtractionParams(BaseModel):
             "users, so both of PRoX's GA4 data paths agree on this column."
         ),
     )
+    include_geo: bool = Field(
+        False,
+        description=(
+            "Add a 'geo_country' column from geo.country. Unlike include_item_category, this is "
+            "populated automatically by GA4's own IP geolocation -- no ecommerce/GTM "
+            "implementation work required on the site's part -- so it's a reliably-populated, "
+            "low-cardinality segment dimension even on properties where item_category is empty."
+        ),
+    )
     filter_type: Optional[UserFilterType] = None
     filter_value: str = ""
 

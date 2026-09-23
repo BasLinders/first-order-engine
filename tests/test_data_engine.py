@@ -708,6 +708,20 @@ def test_build_event_log_include_item_category_false_omits_column():
     assert "item_category" not in sql
 
 
+def test_build_event_log_include_geo_adds_geo_country_column():
+    # geo.country is populated by GA4's own IP geolocation -- no ecommerce/GTM implementation
+    # required, unlike item_category, so it's a reliable segment dimension when category isn't.
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_geo=True)
+    sql = event_log_sql.build_event_log(params)
+    assert "geo.country AS geo_country" in sql
+
+
+def test_build_event_log_include_geo_false_omits_column():
+    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_geo=False)
+    sql = event_log_sql.build_event_log(params)
+    assert "geo_country" not in sql
+
+
 def test_build_event_log_segment_flags_coexist_with_revenue_and_attributes():
     params = EventLogExtractionParams(
         connection=CONN,
@@ -716,6 +730,7 @@ def test_build_event_log_segment_flags_coexist_with_revenue_and_attributes():
         include_device=True,
         include_traffic_source=True,
         include_item_category=True,
+        include_geo=True,
         attribute_params=["page_location"],
     )
     sql = event_log_sql.build_event_log(params)
@@ -723,6 +738,7 @@ def test_build_event_log_segment_flags_coexist_with_revenue_and_attributes():
     assert "device.category AS device_category" in sql
     assert "AS traffic_source" in sql
     assert "AS category" in sql
+    assert "geo.country AS geo_country" in sql
     assert "AS page_location" in sql
 
 

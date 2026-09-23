@@ -27,11 +27,18 @@ FLOAT64 column that doesn't touch event_params at all). NULL revenue on
 non-purchase rows is expected GA4 behavior, not a bug -- GA4 only ever
 populates ecommerce.purchase_revenue on 'purchase' events.
 
-Standard GA4 segment dimensions (device, traffic source, item category)
+Standard GA4 segment dimensions (device, traffic source, item category, geo)
 live outside event_params entirely -- top-level structs and a repeated
 field, not attribute keys -- so they get their own include_* flags rather
 than going through attribute_params/numeric_attribute_params:
-include_device, include_traffic_source, include_item_category.
+include_device, include_traffic_source, include_item_category, include_geo.
+include_geo (geo.country) is the one genuinely always-populated segment
+dimension of the four: device/traffic source come from GA4's own tracking
+too, but item_category depends entirely on the site's ecommerce/GTM
+implementation actually sending it, and is often empty even on properties
+with GA4 ecommerce enabled -- geo.country needs no implementation work at
+all (IP geolocation), so it's a reliable fallback segment when category
+isn't populated.
 """
 
 from __future__ import annotations
@@ -153,6 +160,7 @@ def build_event_log(p: EventLogExtractionParams, limit: int = 0) -> str:
         if p.include_item_category
         else ""
     )
+    geo_select = ",\n    geo.country AS geo_country" if p.include_geo else ""
 
     seen_aliases: Dict[str, Tuple[str, str]] = {}
     attribute_select = _attribute_columns(seen_aliases, p.attribute_params, "string")
@@ -167,7 +175,7 @@ base AS (
   SELECT
     {case_id_expr} AS case_id,
     {activity_col} AS activity,
-    TIMESTAMP_MICROS(event_timestamp) AS timestamp{user_id_select}{revenue_select}{device_select}{traffic_source_select}{item_category_select}{attribute_select}
+    TIMESTAMP_MICROS(event_timestamp) AS timestamp{user_id_select}{revenue_select}{device_select}{traffic_source_select}{item_category_select}{geo_select}{attribute_select}
   FROM {table}
   WHERE {suffix}{event_filter}
 )
