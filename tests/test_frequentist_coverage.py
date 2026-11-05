@@ -326,21 +326,22 @@ def test_run_ztest_greater_and_less_branches():
 
 def test_analytical_power_one_sided_branch():
     """One-sided power exercises the single-tail z_alpha path."""
-    power = Engine.calculate_analytical_power(0.03, 0.01, 0.05, GREATER)
+    power = Engine.calculate_analytical_power(0.10, 1000, 1000, 0.20, 0.05, GREATER)
     assert 0.0 < power <= 1.0
 
 
 def test_bootstrap_power_unpooled_se_path():
-    """The unpooled-SE bootstrap path returns a valid proportion."""
+    """The unpooled-SE (default) bootstrap path returns a valid proportion."""
     p = Engine.run_vectorized_bootstrap_power(
-        ctrl_conv=100,
-        ctrl_n=1000,
-        chal_conv=140,
-        chal_n=1000,
+        baseline_rate=0.10,
+        n_ctrl=1000,
+        n_chal=1000,
+        mde_relative=0.40,
         alpha=0.05,
         n_bootstraps=3000,
         alternative=TWO_SIDED,
         use_pooled_se=False,
+        random_state=1,
     )
     assert 0.0 <= p <= 1.0
 
@@ -348,7 +349,7 @@ def test_bootstrap_power_unpooled_se_path():
 def test_bootstrap_power_zero_n_returns_zero():
     """A zero sample size short-circuits to zero power."""
     power = Engine.run_vectorized_bootstrap_power(
-        ctrl_conv=0, ctrl_n=0, chal_conv=10, chal_n=100
+        baseline_rate=0.10, n_ctrl=0, n_chal=100, mde_relative=0.10
     )
     assert power == 0.0
 
@@ -409,11 +410,11 @@ def test_run_lin_adjustment_returns_per_challenger_results():
 # --------------------------------------------------------------------- #
 
 
-def test_compute_interval_difference_zero_se_collapses_to_point():
-    """A zero SE collapses the interval to the point estimate."""
+def test_compute_interval_difference_zero_se_is_unbounded():
+    """A zero SE carries no uncertainty information: unbounded, not a point."""
     lo, hi = compute_interval_difference(0.01, 0.0, 0.05, TWO_SIDED)
-    assert lo == 0.01
-    assert hi == 0.01
+    assert lo == float("-inf")
+    assert hi == float("inf")
 
 
 def test_compute_non_inferiority_zero_se_is_invalid():

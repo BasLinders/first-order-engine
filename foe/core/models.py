@@ -86,7 +86,13 @@ class FrequentistResult(BaseModel):
     conversion_rate: float
     standard_error: float
     p_value: float = Field(..., ge=0.0, le=1.0)
-    uplift: float
+    uplift: Optional[float] = Field(
+        ...,
+        description=(
+            "Relative lift vs control. None when the control conversion rate is "
+            "0, where relative lift is undefined."
+        ),
+    )
     is_significant: bool
     ci_diff: Tuple[float, float] = Field(
         ...,
@@ -101,6 +107,13 @@ class FrequentistResult(BaseModel):
     )
     lower_bound_diff: Optional[float] = None
     is_non_inferior: Optional[bool] = None
+    warning: Optional[str] = Field(
+        None,
+        description=(
+            "Set when the result relied on a fallback method, e.g. both arms at "
+            "0% or 100% conversion, where the unpooled standard error is zero."
+        ),
+    )
 
 
 class BayesianResult(BaseModel):
