@@ -23,7 +23,8 @@ def test_generate_mock_forecast_data_future_regressors_cover_horizon():
 
     last_history_date = dataset.data["date"].max()
     assert len(dataset.future_regressors) == 30
-    assert dataset.future_regressors["ds"].min() == last_history_date + pd.Timedelta(days=1)
+    assert dataset.future_regressors["ds"].min(
+    ) == last_history_date + pd.Timedelta(days=1)
     assert dataset.future_regressors["marketing_spend"].notna().all()
 
 

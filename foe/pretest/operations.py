@@ -220,7 +220,8 @@ class PretestEngine:
                 baseline_rate, baseline_rate * (1 - baseline_rate), n, z_alpha, z_power
             )
             results.append(
-                {"Week": int(week), "Visitors_Per_Variant": int(n), "MDE": float(mde_rel)}
+                {"Week": int(week), "Visitors_Per_Variant": int(n),
+                             "MDE": float(mde_rel)}
             )
 
         return {"table": results, "conclusion": cls.generate_mde_table_conclusion(results)}
@@ -312,7 +313,8 @@ class PretestEngine:
                 ),
             }
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_mde_table_continuous(
             num_variants=num_variants,
             weekly_units=weekly_visitors,
@@ -467,7 +469,8 @@ class PretestEngine:
                 ),
             }
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_fixed_sample_size_continuous(
             mean=mean,
             variance=variance,
@@ -603,7 +606,8 @@ class PretestEngine:
         ):
             return {"power": 0.0, "conclusion": "Invalid inputs."}
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_power_continuous(
             mean=mean,
             variance=variance,
@@ -661,7 +665,8 @@ class PretestEngine:
 
             if total_count <= 0:
                 results.append(
-                    {"Week": int(week), "Units_Per_Variant": 0, "Mean": None, "MDE": None}
+                    {"Week": int(week), "Units_Per_Variant": 0,
+                                 "Mean": None, "MDE": None}
                 )
                 continue
 
