@@ -103,6 +103,46 @@ class FrequentistResult(BaseModel):
     is_non_inferior: Optional[bool] = None
 
 
+class BoschlooResult(BaseModel):
+    """
+    Output of BoschlooEngine for a single challenger-vs-control comparison.
+    Separate from FrequentistResult so the exact test can evolve independently
+    of the z-test contract.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    variant_label: str
+    control_label: str
+    control_rate: float
+    conversion_rate: float
+    absolute_diff: float = Field(..., description="conversion_rate - control_rate")
+    uplift: Optional[float] = Field(
+        ...,
+        description=(
+            "Relative lift (absolute_diff / control_rate). None when the control "
+            "rate is 0, where relative lift is undefined."
+        ),
+    )
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    alpha: float = Field(
+        ..., description="Significance level used, Šidák-adjusted for A/B/n tests."
+    )
+    is_significant: bool
+    ci_diff: Tuple[float, float] = Field(
+        ...,
+        description=(
+            "Newcombe hybrid-score interval for absolute_diff at the same alpha. "
+            "Not an inversion of Boschloo's test, so in rare borderline cases it "
+            "can disagree with is_significant. One-sided tests produce an "
+            "unbounded side, as in FrequentistResult."
+        ),
+    )
+    test_method: str = "boschloo_exact"
+    ci_method: str = "newcombe_hybrid_score"
+    conclusion: str
+
+
 class BayesianResult(BaseModel):
     """Standardized output for a single Bayesian variant comparison."""
 
