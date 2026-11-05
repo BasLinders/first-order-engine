@@ -151,23 +151,23 @@ def test_sidak_correction_applied_for_multiple_variants(engine):
 
 def test_bootstrap_power_one_sided_greater_than_two_sided(engine):
     """
-    For a winning challenger, one-sided (GREATER) bootstrap power should be
+    For a planned improvement, one-sided (GREATER) bootstrap power should be
     higher than two-sided power, since the one-sided test concentrates all
-    rejection power in the direction of the observed effect.
+    rejection power in the direction of the effect.
     """
     power_two_sided = FrequentistEngine.run_vectorized_bootstrap_power(
-        ctrl_conv=100, ctrl_n=1000,
-        chal_conv=130, chal_n=1000,
+        baseline_rate=0.10, n_ctrl=1000, n_chal=1000, mde_relative=0.20,
         alpha=0.05,
         n_bootstraps=5000,
         alternative=AlternativeHypothesis.TWO_SIDED,
+        random_state=1,
     )
     power_one_sided = FrequentistEngine.run_vectorized_bootstrap_power(
-        ctrl_conv=100, ctrl_n=1000,
-        chal_conv=130, chal_n=1000,
+        baseline_rate=0.10, n_ctrl=1000, n_chal=1000, mde_relative=0.20,
         alpha=0.05,
         n_bootstraps=5000,
         alternative=AlternativeHypothesis.GREATER,
+        random_state=1,
     )
     assert power_one_sided > power_two_sided
 
@@ -210,21 +210,25 @@ def test_run_ztest_zero_se_returns_one():
 
 
 def test_analytical_power_high_effect_near_one():
-    """A large effect relative to SE should yield power close to 1.0."""
+    """A large planned effect relative to the sample size gives power near 1.0."""
     power = FrequentistEngine.calculate_analytical_power(
-        diff=0.10,
-        se_diff=0.005,
+        baseline_rate=0.10,
+        n_ctrl=5000,
+        n_chal=5000,
+        mde_relative=0.50,
         alpha=0.05,
         alternative=AlternativeHypothesis.TWO_SIDED,
     )
     assert power > 0.99
 
 
-def test_analytical_power_zero_se_returns_zero():
-    """Zero SE is an invalid input; power should be 0.0 rather than crash."""
+def test_analytical_power_zero_n_returns_zero():
+    """An empty arm is an invalid input; power should be 0.0 rather than crash."""
     power = FrequentistEngine.calculate_analytical_power(
-        diff=0.01,
-        se_diff=0.0,
+        baseline_rate=0.10,
+        n_ctrl=0,
+        n_chal=1000,
+        mde_relative=0.10,
         alpha=0.05,
         alternative=AlternativeHypothesis.TWO_SIDED,
     )

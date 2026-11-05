@@ -1,4 +1,5 @@
 from scipy.stats import norm
+from statsmodels.stats.proportion import confint_proportions_2indep
 from typing import Tuple, Dict, Any
 from foe.core.models import AlternativeHypothesis
 
@@ -27,9 +28,14 @@ def compute_interval_difference(
                      GREATER   -> lower bound only: (diff - z*se, +inf)
                      LESS      -> upper bound only: (-inf, diff + z*se)
                      TWO_SIDED -> symmetric:        (diff - z*se, diff + z*se)
+
+    A non-positive SE carries no usable uncertainty information (e.g. both
+    arms at 0% or 100%), so the interval is returned fully unbounded rather
+    than as a zero-width point that would imply certainty. Callers with the
+    raw counts should use compute_newcombe_interval instead.
     """
     if se_diff <= 0:
-        return (float(diff_cr), float(diff_cr))
+        return (float("-inf"), float("inf"))
 
     if alternative == AlternativeHypothesis.GREATER:
         z = norm.ppf(1 - alpha)
@@ -43,6 +49,35 @@ def compute_interval_difference(
         z = norm.ppf(1 - alpha / 2)
         moe = z * se_diff
         return (float(diff_cr - moe), float(diff_cr + moe))
+
+
+def compute_newcombe_interval(
+    ctrl_conv: int,
+    ctrl_n: int,
+    chal_conv: int,
+    chal_n: int,
+    alpha: float = 0.05,
+    alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+) -> Tuple[float, float]:
+    """
+    Newcombe hybrid score interval for p_chal - p_ctrl, computed from counts.
+    Well defined with zero counts and bounded to [-1, 1], unlike the Wald
+    interval. Does not apply a reduction_factor (φ).
+
+    One-sided alternatives return a single bound at level 1 - alpha with the
+    other side unbounded, matching compute_interval_difference.
+    """
+    level_alpha = alpha if alternative == AlternativeHypothesis.TWO_SIDED else 2 * alpha
+    low, high = confint_proportions_2indep(
+        chal_conv, chal_n, ctrl_conv, ctrl_n,
+        method="newcomb", compare="diff", alpha=level_alpha,
+    )
+    low, high = float(max(low, -1.0)), float(min(high, 1.0))
+    if alternative == AlternativeHypothesis.GREATER:
+        return (low, float("inf"))
+    if alternative == AlternativeHypothesis.LESS:
+        return (float("-inf"), high)
+    return (low, high)
 
 
 def _generate_ni_conclusion(
@@ -127,7 +162,7 @@ def compute_non_inferiority(
     z_stat_ni = (diff + margin) / se_diff
 
     # One-sided p-value: probability of observing this Z or larger under H0.
-    p_value_ni = float(1 - norm.cdf(z_stat_ni))
+    p_value_ni = float(norm.sf(z_stat_ni))
 
     # One-sided lower bound: worst-case scenario for the difference.
     # If this stays above -margin, we can reject inferiority.

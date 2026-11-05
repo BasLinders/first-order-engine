@@ -6,7 +6,10 @@ from scipy.stats import norm
 from typing import List, Dict, Any, Optional, Tuple
 
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
-from foe.frequentist.confidence import compute_interval_difference
+from foe.frequentist.confidence import (
+    compute_interval_difference,
+    compute_newcombe_interval,
+)
 
 
 def apply_sidak(alpha: float, num_variants: int) -> float:
@@ -42,8 +45,9 @@ class FrequentistEngine:
     def generate_conclusion_statement(
         variant_name: str,
         is_significant: bool,
-        relative_lift: float,
+        relative_lift: Optional[float],
         false_positive_risk: Optional[float] = None,
+        absolute_diff: Optional[float] = None,
     ) -> str:
         """
         Generates a UI-agnostic summary of the results in English.
@@ -51,6 +55,11 @@ class FrequentistEngine:
         When `false_positive_risk` is omitted (None) the original wording is
         preserved verbatim. When supplied, the wording is calibrated to that
         risk instead of asserting unconditional confidence.
+
+        Direction is taken from `absolute_diff` when supplied, otherwise from
+        `relative_lift`. `relative_lift` may be None (control rate of 0, where
+        relative lift is undefined); `absolute_diff` is then required to tell
+        a winner from a loser.
         """
         if not is_significant:
             return (
@@ -59,29 +68,40 @@ class FrequentistEngine:
                 "conclude that this variant had a meaningful impact."
             )
 
+        direction = absolute_diff if absolute_diff is not None else relative_lift
+        if direction is None:
+            raise ValueError(
+                "absolute_diff is required when relative_lift is undefined (None)."
+            )
+        is_positive = direction > 0
+        impact = (
+            f"an observed relative impact of {relative_lift:+.2%}"
+            if relative_lift is not None
+            else "an undefined relative impact (the control had no conversions)"
+        )
+
         # --- Backward-compatible path: no risk supplied -> original wording ---
         if false_positive_risk is None:
-            if relative_lift > 0:
+            if is_positive:
                 return (
                     f"Significant Positive Impact: '{variant_name}' is a clear winner "
-                    f"with an observed relative impact of {relative_lift:+.2%}. "
+                    f"with {impact}. "
                     "You can confidently roll this out."
                 )
             return (
                 f"Significant Negative Impact: '{variant_name}' is performing worse than control "
-                f"with an observed relative impact of {relative_lift:+.2%}. "
+                f"with {impact}. "
                 "You can confidently discard this variant."
             )
 
         # --- Risk-aware path -------------------------------------------------
         provisional = false_positive_risk > 0.20
-        if relative_lift > 0:
+        if is_positive:
             base = (
-                f"Significant Positive Impact: '{variant_name}' shows an observed "
-                f"relative impact of {relative_lift:+.2%}."
+                f"Significant Positive Impact: '{variant_name}' shows {impact}."
             )
             tail = (
-                f" The false-positive risk is {false_positive_risk:.0%} given your prior — "
+                f" The false-positive risk is {false_positive_risk:.0%} given your prior and planned effect size — "
                 "treat this as provisional and consider replication before a full rollout."
                 if provisional
                 else f" The false-positive risk is low ({false_positive_risk:.0%}); rolling this out is well supported."
@@ -90,10 +110,10 @@ class FrequentistEngine:
 
         base = (
             f"Significant Negative Impact: '{variant_name}' is performing worse than control "
-            f"with an observed relative impact of {relative_lift:+.2%}."
+            f"with {impact}."
         )
         tail = (
-            f" The false-positive risk is {false_positive_risk:.0%} given your prior — "
+            f" The false-positive risk is {false_positive_risk:.0%} given your prior and planned effect size — "
             "confirm before discarding."
             if provisional
             else f" The false-positive risk is low ({false_positive_risk:.0%}); discarding this variant is well supported."
@@ -133,48 +153,80 @@ class FrequentistEngine:
         pre_period_kpi: str,
         variant_col: str = "variant",
         alpha: float = 0.05,
+        control_label: Optional[str] = None,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> List[Dict[str, Any]]:
         """
         Lin's Adjustment (2013). More robust than CUPED for heterogeneous effects.
         Regression: Y ~ Treatment * (Covariate - mean(Covariate)). HC3 robust SEs.
+
+        Inference follows run_synthesis: z-based p-value for `alternative`,
+        Šidák-adjusted alpha for 3+ variants, and a matching (1 - alpha)
+        interval from compute_interval_difference (one-sided -> one bound
+        unbounded). HC3 inference in statsmodels is normal-based, so the
+        two-sided p-value equals model.pvalues.
 
         Args:
             df:              User-level DataFrame.
             target_kpi:      Outcome column (e.g. 'converted').
             pre_period_kpi:  Pre-experiment covariate column.
             variant_col:     Variant assignment column.
-            alpha:           Significance threshold (alpha = 1 - confidence_level).
+            alpha:           Family-wise significance level (1 - confidence_level),
+                             before Šidák adjustment.
+            control_label:   Value of `variant_col` that is the control. Strongly
+                             recommended: when omitted, the alphabetically first
+                             label is used, which silently picks the wrong
+                             baseline for labels like 'Alt' vs 'control'.
+            alternative:     Direction of the test (challenger vs control).
+
+        Each result's "alpha" is the adjusted threshold actually applied.
+        "relative_lift" is None when the fitted control mean is 0.
         """
         df = df.copy()
         df["cov_centered"] = df[pre_period_kpi] - df[pre_period_kpi].mean()
 
         variants = sorted(df[variant_col].unique())
-        baseline = variants[0]  # Assumes alphabetical or 'Control' is first
+        if control_label is None:
+            baseline = variants[0]
+        elif control_label not in variants:
+            raise ValueError(
+                f"control_label '{control_label}' not found in '{variant_col}'; "
+                f"available: {variants}."
+            )
+        else:
+            baseline = control_label
+        challengers = [v for v in variants if v != baseline]
+        adj_alpha = apply_sidak(alpha, len(variants))
 
         formula = f"{target_kpi} ~ C({variant_col}, Treatment(reference='{baseline}')) * cov_centered"
         model = smf.ols(formula, data=df).fit(cov_type="HC3")
 
         results = []
-        for challenger in variants[1:]:
+        for challenger in challengers:
             term = (
                 f"C({variant_col}, Treatment(reference='{baseline}'))[T.{challenger}]"
             )
 
-            p_val = model.pvalues[term]
-            ate = model.params[term]
-            control_mean = model.params["Intercept"]
+            ate = float(model.params[term])
+            se = float(model.bse[term])
+            control_mean = float(model.params["Intercept"])
+            p_val = FrequentistEngine.run_ztest(ate, se, alternative)
 
             results.append(
                 {
                     "variant": challenger,
+                    "control": baseline,
                     "p_value": float(p_val),
-                    "is_significant": bool(p_val < alpha),
-                    "absolute_lift": float(ate),
+                    "alpha": float(adj_alpha),
+                    "is_significant": bool(p_val < adj_alpha),
+                    "absolute_lift": ate,
                     "relative_lift": (
-                        float(ate / control_mean) if control_mean != 0 else 0
+                        ate / control_mean if control_mean != 0 else None
                     ),
-                    "ci": model.conf_int().loc[term].tolist(),
-                    "std_err": float(model.bse[term]),
+                    "ci": list(
+                        compute_interval_difference(ate, se, adj_alpha, alternative)
+                    ),
+                    "std_err": se,
                 }
             )
 
@@ -212,10 +264,14 @@ class FrequentistEngine:
 
         1. Degrees-of-freedom correction. The centring baseline is estimated from
            the same rows whose residuals we measure, biasing the observed variance
-           DOWNWARD (the anti-conservative direction). We divide by the residual
-           dof using Kish's effective sample size n_eff = 1 / Σ wᵢ², so φ → 1 under
-           a true binomial null even on short windows. (Reduces to n/(n-k) for
-           equal weights.)
+           DOWNWARD (the anti-conservative direction). With visitor weights the
+           expectation under a binomial null is exactly (n - k)/n times the
+           expected binomial variance, for n periods and k fitted baselines, so
+           we scale by n/(n - k) and φ → 1 under a true binomial null even on
+           short windows. This uses the raw period count, not Kish's effective
+           sample size: Kish's n_eff over-corrects when daily traffic is uneven
+           (campaign spikes), inflating φ (about 1.5 with one 40x spike day).
+           n_effective is still reported as a traffic-concentration diagnostic.
 
         2. Optional day-of-week control. If `date_col` is supplied, the centring
            baseline is the per-weekday rate rather than a single global mean, so
@@ -265,11 +321,11 @@ class FrequentistEngine:
         observed_var = float((weights * (rates - expected) ** 2).sum())
         expected_binomial_var = float((weights * rates * (1 - rates) / visitors).sum())
 
-        # --- Degrees-of-freedom correction (Kish effective sample size) --
+        # --- Degrees-of-freedom correction: n / (n - k) in periods ---------
         n_effective = 1.0 / float(np.square(weights).sum())
-        dof = n_effective - n_params
+        dof = n_periods - n_params
         if dof > 0:
-            observed_var *= n_effective / dof
+            observed_var *= n_periods / dof
 
         if expected_binomial_var == 0:
             return {
@@ -313,62 +369,150 @@ class FrequentistEngine:
     def run_ztest(
         diff: float, se_diff: float, alternative: AlternativeHypothesis
     ) -> float:
-        """Standard Z-test logic for varying tail configurations."""
+        """
+        Standard Z-test logic for varying tail configurations. Upper tails use
+        norm.sf, which stays accurate where 1 - norm.cdf underflows to 0
+        (z above ~8.3).
+
+        A zero SE returns 1.0 (no evidence). run_synthesis avoids reaching
+        this with a non-zero difference by falling back to the pooled SE.
+        """
         if se_diff == 0:
             return 1.0
 
         z_stat = diff / se_diff
 
         if alternative == AlternativeHypothesis.GREATER:
-            return 1 - norm.cdf(z_stat)
+            return float(norm.sf(z_stat))
         elif alternative == AlternativeHypothesis.LESS:
-            return norm.cdf(z_stat)
+            return float(norm.cdf(z_stat))
         else:  # TWO_SIDED
-            return 2 * (1 - norm.cdf(abs(z_stat)))
+            return float(min(1.0, 2 * norm.sf(abs(z_stat))))
+
+    # ------------------------------------------------------------------ #
+    #  Power at a pre-specified effect (MDE)
+    #
+    #  Power is evaluated at an effect size fixed BEFORE looking at the
+    #  result, never at the observed difference. "Observed power" is a
+    #  one-to-one function of the p-value (power = 0.5 exactly at p = alpha),
+    #  so it adds no information: it is inflated for significant results
+    #  (winner's curse) and mechanically low for flat ones, which would make
+    #  the false-positive / false-negative risks below circular.
+    # ------------------------------------------------------------------ #
 
     @staticmethod
-    def calculate_analytical_power(
-        diff: float, se_diff: float, alpha: float, alternative: AlternativeHypothesis
+    def _alternative_rate(
+        baseline_rate: float, mde_relative: float, alternative: AlternativeHypothesis
     ) -> float:
-        """Closed-form power at the observed effect size."""
-        if se_diff == 0:
+        """
+        Challenger rate under H1 for a relative MDE. The effect points in the
+        tested direction: a decrease for LESS, an increase otherwise.
+        """
+        if not 0.0 < baseline_rate < 1.0:
+            raise ValueError(
+                f"baseline_rate must be strictly between 0 and 1, got {baseline_rate}."
+            )
+        if mde_relative <= 0:
+            raise ValueError(
+                "mde_relative must be a positive relative effect (e.g. 0.05 for 5%); "
+                f"got {mde_relative}. The direction follows `alternative`."
+            )
+        sign = -1.0 if alternative == AlternativeHypothesis.LESS else 1.0
+        p_alt = baseline_rate * (1.0 + sign * mde_relative)
+        if not 0.0 < p_alt < 1.0:
+            raise ValueError(
+                f"baseline_rate={baseline_rate} with mde_relative={mde_relative} "
+                f"implies a challenger rate of {p_alt:.4f}, outside (0, 1)."
+            )
+        return p_alt
+
+    @classmethod
+    def calculate_analytical_power(
+        cls,
+        baseline_rate: float,
+        n_ctrl: int,
+        n_chal: int,
+        mde_relative: float,
+        alpha: float,
+        alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        reduction_factor: float = 1.0,
+    ) -> float:
+        """
+        Closed-form power of run_synthesis's test to detect a pre-specified
+        relative effect `mde_relative` (same convention as the pretest module,
+        e.g. 0.05 = 5% relative lift).
+
+        Uses the same φ-scaled unpooled SE as run_synthesis, evaluated at the
+        rates under H1 (baseline vs baseline·(1 ± mde)). Two-sided power
+        includes both rejection tails.
+
+        Args:
+            baseline_rate:    Control conversion rate. A planned rate, or the
+                              observed control rate (the control is not subject
+                              to the winner's curse).
+            n_ctrl, n_chal:   Sample sizes per arm.
+            mde_relative:     Effect size the test should detect, fixed in
+                              advance. Never the observed lift.
+            alpha:            The per-comparison alpha actually used for the
+                              decision: Šidák-adjusted for A/B/n, as in
+                              run_synthesis (see apply_sidak).
+            alternative:      Test direction.
+            reduction_factor: φ, as on ExperimentInput.
+        """
+        if n_ctrl <= 0 or n_chal <= 0:
             return 0.0
+        p_alt = cls._alternative_rate(baseline_rate, mde_relative, alternative)
+        se = (
+            reduction_factor
+            * (
+                baseline_rate * (1 - baseline_rate) / n_ctrl
+                + p_alt * (1 - p_alt) / n_chal
+            )
+        ) ** 0.5
+        z_delta = abs(p_alt - baseline_rate) / se
 
-        z_delta = abs(diff) / se_diff
-        side_multiplier = 2 if alternative == AlternativeHypothesis.TWO_SIDED else 1
-        z_alpha = norm.ppf(1 - alpha / side_multiplier)
-
+        if alternative == AlternativeHypothesis.TWO_SIDED:
+            z_alpha = norm.ppf(1 - alpha / 2)
+            return float(norm.cdf(z_delta - z_alpha) + norm.cdf(-z_delta - z_alpha))
+        z_alpha = norm.ppf(1 - alpha)
         return float(norm.cdf(z_delta - z_alpha))
 
-    @staticmethod
+    @classmethod
     def run_vectorized_bootstrap_power(
-        ctrl_conv: int,
-        ctrl_n: int,
-        chal_conv: int,
-        chal_n: int,
+        cls,
+        baseline_rate: float,
+        n_ctrl: int,
+        n_chal: int,
+        mde_relative: float,
         alpha: float = 0.05,
         n_bootstraps: int = 10000,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
-        use_pooled_se: bool = True,
+        use_pooled_se: bool = False,
+        random_state: Optional[int] = None,
     ) -> float:
         """
-        Observed power via high-performance vectorized bootstrapping.
-        Simulates conversion COUNTS via the Binomial distribution to avoid OOM
-        when N is large.
+        Simulation-based power to detect a pre-specified relative effect, as a
+        cross-check on calculate_analytical_power at small samples where the
+        normal approximation is loose. Simulates conversion COUNTS from
+        Binomial(n_ctrl, baseline_rate) and Binomial(n_chal, baseline·(1 ± mde))
+        and reports the share of simulated tests that reject at `alpha`.
 
-        Note: this routine does not apply a reduction_factor; under overdispersion
-        prefer `calculate_analytical_power`, which shares the φ-scaled unpooled SE
-        used by `run_synthesis`. `use_pooled_se=False` aligns the bootstrap test
-        statistic with that unpooled SE (default True preserves prior behavior).
+        Arguments as in calculate_analytical_power. `alpha` should be the
+        Šidák-adjusted per-comparison alpha for A/B/n tests.
+
+        Defaults to the unpooled SE, matching run_synthesis. `use_pooled_se=True`
+        gives the textbook pooled statistic instead. Does not apply a
+        reduction_factor (it simulates pure binomial sampling); under
+        overdispersion use calculate_analytical_power.
         """
-        if ctrl_n == 0 or chal_n == 0:
+        if n_ctrl <= 0 or n_chal <= 0:
             return 0.0
+        p_alt = cls._alternative_rate(baseline_rate, mde_relative, alternative)
+        ctrl_n, chal_n = n_ctrl, n_chal
 
-        ctrl_p = ctrl_conv / ctrl_n
-        chal_p = chal_conv / chal_n
-
-        sim_ctrl_convs = np.random.binomial(n=ctrl_n, p=ctrl_p, size=n_bootstraps)
-        sim_chal_convs = np.random.binomial(n=chal_n, p=chal_p, size=n_bootstraps)
+        rng = np.random.default_rng(random_state)
+        sim_ctrl_convs = rng.binomial(n=ctrl_n, p=baseline_rate, size=n_bootstraps)
+        sim_chal_convs = rng.binomial(n=chal_n, p=p_alt, size=n_bootstraps)
 
         means_ctrl = sim_ctrl_convs / ctrl_n
         means_chal = sim_chal_convs / chal_n
@@ -389,11 +533,11 @@ class FrequentistEngine:
         z_stats = (means_chal - means_ctrl) / se
 
         if alternative == AlternativeHypothesis.GREATER:
-            p_values = 1 - norm.cdf(z_stats)
+            p_values = norm.sf(z_stats)
         elif alternative == AlternativeHypothesis.LESS:
             p_values = norm.cdf(z_stats)
         else:
-            p_values = 2 * (1 - norm.cdf(np.abs(z_stats)))
+            p_values = 2 * norm.sf(np.abs(z_stats))
 
         return float(np.mean(p_values < alpha))
 
@@ -402,9 +546,10 @@ class FrequentistEngine:
     #
     #  Composable helpers. Deliberately NOT wired into run_synthesis: the
     #  FrequentistResult contract (see test_frequentist.py) carries inference
-    #  fields only. Call these from a reporting layer, or extend the model with
-    #  observed_power / decision_risk_* and populate them in run_synthesis if you
-    #  want them on every result.
+    #  fields only. Call assess_result_risk from a reporting layer: it takes a
+    #  pre-specified MDE and applies the same Šidák alpha as run_synthesis.
+    #  The `power` fed into these formulas must be power at that MDE, never
+    #  power at the observed effect (see the power section above).
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -484,6 +629,13 @@ class FrequentistEngine:
           - significant result      -> false-positive risk (FPR)
           - non-significant result  -> false-negative discovery rate (FNDR)
 
+        `power` must be the power to detect a pre-specified effect (see
+        calculate_analytical_power), and `alpha` the per-comparison alpha
+        used for the decision (Šidák-adjusted for A/B/n). Power at the
+        observed effect makes FPR look low for every significant result and
+        FNDR high for every flat one, by construction. Prefer
+        assess_result_risk, which wires both correctly.
+
         The numeric value is identical across tails; only the label changes to
         reflect direction.
         """
@@ -514,6 +666,57 @@ class FrequentistEngine:
             "prior": float(prior),
             "elevated": bool(value > 0.20),
         }
+
+    @classmethod
+    def assess_result_risk(
+        cls,
+        data: ExperimentInput,
+        result: FrequentistResult,
+        mde_relative: float,
+        prior: float,
+        baseline_rate: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Decision risk for one run_synthesis result, with power evaluated at a
+        pre-specified relative MDE and the same Šidák-adjusted alpha that
+        run_synthesis used for the decision.
+
+        Args:
+            data:          The ExperimentInput passed to run_synthesis.
+            result:        One FrequentistResult from that call.
+            mde_relative:  Effect size fixed in advance (e.g. the MDE from the
+                           pretest plan). Never the observed lift.
+            prior:         P(H1), e.g. from resolve_prior_probability.
+            baseline_rate: Planned control rate. Defaults to the observed
+                           control rate.
+
+        Returns assess_decision_risk's dict plus "alpha" and "mde_relative".
+        """
+        labels = data.labels or [f"Variant {i}" for i in range(len(data.visitors))]
+        if result.variant_label not in labels[1:]:
+            raise ValueError(
+                f"Result for '{result.variant_label}' does not match a challenger "
+                f"in the input; challengers are {labels[1:]}."
+            )
+        i = labels.index(result.variant_label, 1)
+        alpha = apply_sidak(1.0 - data.confidence_level, len(data.visitors))
+        if baseline_rate is None:
+            baseline_rate = data.conversions[0] / data.visitors[0]
+
+        power = cls.calculate_analytical_power(
+            baseline_rate=baseline_rate,
+            n_ctrl=data.visitors[0],
+            n_chal=data.visitors[i],
+            mde_relative=mde_relative,
+            alpha=alpha,
+            alternative=data.alternative,
+            reduction_factor=data.reduction_factor,
+        )
+        risk = cls.assess_decision_risk(
+            result.is_significant, alpha, power, prior, data.alternative
+        )
+        risk.update({"alpha": float(alpha), "mde_relative": float(mde_relative)})
+        return risk
 
     # ------------------------------------------------------------------ #
     #  Monetary impact (deterministic)
@@ -729,28 +932,60 @@ class FrequentistEngine:
             SE = sqrt(phi * p*(1-p) / n)
 
         so SE is multiplied by sqrt(phi), not phi directly.
+
+        Edge cases:
+          * Control rate 0: uplift is None (relative lift undefined); the
+            conclusion's direction comes from the absolute difference.
+          * Both arms at 0% or 100% (unpooled SE = 0): the test falls back to
+            the pooled SE (the textbook SE under H0, still φ-scaled) and the
+            interval to Newcombe's score interval (no φ), and `warning` is set.
+            Identical degenerate arms then give p = 1; opposite ones (0% vs
+            100%) are correctly significant instead of reported as flat.
         """
         labels = data.labels or [f"Variant {i}" for i in range(len(data.visitors))]
-        p_ctrl = data.conversions[0] / data.visitors[0]
+        c_ctrl = data.conversions[0]
         n_ctrl = data.visitors[0]
+        p_ctrl = c_ctrl / n_ctrl
         alpha = apply_sidak(1.0 - data.confidence_level, len(data.visitors))
+        phi = data.reduction_factor
 
         results = []
         for i in range(1, len(data.visitors)):
+            c_chal = data.conversions[i]
             n_chal = data.visitors[i]
-            p_chal = data.conversions[i] / n_chal
+            p_chal = c_chal / n_chal
             diff = p_chal - p_ctrl
-            uplift = diff / p_ctrl if p_ctrl != 0 else 0.0
+            uplift = diff / p_ctrl if p_ctrl != 0 else None
 
             se_diff = (
-                p_ctrl * (1 - p_ctrl) * data.reduction_factor / n_ctrl
-                + p_chal * (1 - p_chal) * data.reduction_factor / n_chal
+                p_ctrl * (1 - p_ctrl) * phi / n_ctrl
+                + p_chal * (1 - p_chal) * phi / n_chal
             ) ** 0.5
 
-            p_value = self.run_ztest(diff, se_diff, data.alternative)
+            warning = None
+            if se_diff > 0:
+                p_value = self.run_ztest(diff, se_diff, data.alternative)
+                ci = compute_interval_difference(diff, se_diff, alpha, data.alternative)
+            else:
+                p_pool = (c_ctrl + c_chal) / (n_ctrl + n_chal)
+                se_pooled = (
+                    p_pool * (1 - p_pool) * phi * (1 / n_ctrl + 1 / n_chal)
+                ) ** 0.5
+                p_value = self.run_ztest(diff, se_pooled, data.alternative)
+                ci = compute_newcombe_interval(
+                    c_ctrl, n_ctrl, c_chal, n_chal, alpha, data.alternative
+                )
+                warning = (
+                    "Both arms converted at 0% or 100%, so the unpooled standard "
+                    "error is zero. The p-value uses the pooled standard error and "
+                    "the interval is Newcombe's score interval. Counts this extreme "
+                    "are better analysed with an exact test (Boschloo)."
+                )
+
             is_sig = bool(p_value < alpha)
-            ci = compute_interval_difference(diff, se_diff, alpha, data.alternative)
-            conclusion = self.generate_conclusion_statement(labels[i], is_sig, uplift)
+            conclusion = self.generate_conclusion_statement(
+                labels[i], is_sig, uplift, absolute_diff=diff
+            )
 
             results.append(
                 FrequentistResult(
@@ -763,6 +998,7 @@ class FrequentistEngine:
                     is_significant=is_sig,
                     ci_diff=ci,
                     conclusion=conclusion,
+                    warning=warning,
                 )
             )
 
