@@ -1,6 +1,0 @@
-# Dependencies for the R validation notebooks
--e ..
-jupyter
-nbconvert
-ipykernel
-rpy2>=3.5
