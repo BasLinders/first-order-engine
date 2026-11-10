@@ -74,7 +74,7 @@ first-order-engine/
 │   ├── srm/
 │   │   └── operations.py        # SRMEngine (chi-squared traffic checks)
 │   ├── interaction/
-│   │   └── operations.py        # InteractionEngine (OLS interaction modelling)
+│   │   └── operations.py        # InteractionEngine (binomial GLM)
 │   ├── behavioral/
 │   │   └── operations.py        # BehavioralEngine (funnel & segment analysis)
 │   ├── continuous/
