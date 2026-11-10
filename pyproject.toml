@@ -90,3 +90,14 @@ target-version = ['py310']
 [[tool.pyright.executionEnvironments]]
 root = "tests"
 reportCallIssue = "none"
+
+[project.optional-dependencies]
+# ...existing dev and bigquery extras...
+# Notebook tooling and the R bridge for r_validation/. R itself and its packages
+# are installed separately (see r_validation/README.md).
+validation = [
+    "jupyter",
+    "nbconvert",
+    "ipykernel",
+    "rpy2>=3.5",
+]
