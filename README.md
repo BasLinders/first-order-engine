@@ -208,7 +208,7 @@ The engine doesn't just output raw numbers — it performs a final Synthesis. By
 
 ## Why First Order Engine?
 
-Standard tools tell you **what** happened. The **First Order Engine** tells you **why** it happened, how much it is actually worth in the long run, and — most importantly — whether the result is mathematically bulletproof regardless of when you stopped the test.
+Most tools tell you whether a result is significant. The First Order Engine also tells you **where the effect comes from** (which segments, which part of the funnel, how tests interact), what it's worth in money with honest uncertainty, and lets you monitor a test continuously without inflating false positives. Its statistics are validated against independent R implementations.
 
 ---
 
