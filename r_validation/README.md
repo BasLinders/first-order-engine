@@ -22,8 +22,7 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 | [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
 All 625 checks pass on the committed run (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
-FOE at commit `904170a`). Update this line when you re-run the notebooks against a newer commit.
-
+FOE at commit `904170a`).
 ### Tolerances
 
 Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
