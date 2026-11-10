@@ -13,7 +13,7 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 
 | Notebook | FOE engine | Used in Hexkit | R reference | Checks |
 |---|---|---|---|---|
-| [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = œÜ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
+| [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
 | [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
 | [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight | 21 |
 | [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic, NB, Gamma, hurdle), `fit_gamma`, `fit_negbin`, `winsorize_series`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `wilcox.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `msm::deltamethod` | 55 |
@@ -30,7 +30,7 @@ Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
 
 - **Boschloo p-values** (abs 5e-4): scipy and exact2x2 each search for the nuisance-parameter
   maximum numerically, on different grids.
-- **Bayesian quantities** (abs 3e-3 on probabilities, 2‚Äì3% relative on expectations): FOE uses
+- **Bayesian quantities** (abs 3e-3 on probabilities, 2–3% relative on expectations): FOE uses
   Monte Carlo and R uses exact integration, so the gap is Monte Carlo error. With 1M draws the
   observed differences are about 0.1%.
 - **RPV moments** (1%): checked against a simulated sample.
@@ -43,13 +43,13 @@ None of these is a bug in FOE, but each one matters for reading or extending the
 - **`run_comparison_suite` with `unit = per_transaction` (the config default) drops zero rows
   before any test**, including the Negative Binomial count test. For "items per order" that is
   correct. For a per-visitor count KPI with real zeros, use `unit = per_visitor`. With the
-  default, the NB is fit to positive counts only and gives a different answer (notebook 04, ¬ß2).
+  default, the NB is fit to positive counts only and gives a different answer (notebook 04, §2).
 - **`ContinuousMetricEngine.fit_gamma` is more precise than `MASS::fitdistr`.** It agrees with the
   exact Gamma MLE to about 1e-5, while `fitdistr` is off by about 0.1% in the shape parameter.
   That is enough to move Gamma LRT p-values noticeably, so notebook 04 uses the exact MLE as the
   reference.
 - **Mann-Whitney exact vs asymptotic:** scipy's `method="auto"` switches to the exact test when
-  either arm has ‚â§ 8 rows and there are no ties. R's `wilcox.test` uses a different rule, so the
+  either arm has ≤ 8 rows and there are no ties. R's `wilcox.test` uses a different rule, so the
   R side reproduces scipy's.
 - **`pwr.norm.test` solved for the effect size** uses a loose internal tolerance (~1e-4). Notebook
   05 inverts its power function with a tight `uniroot` instead.
@@ -58,7 +58,7 @@ None of these is a bug in FOE, but each one matters for reading or extending the
 
 Run these from the repository root.
 
-1. **Install R** (‚â• 4.3). The CRAN installer from <https://cran.r-project.org> ships binary
+1. **Install R** (≥ 4.3). The CRAN installer from <https://cran.r-project.org> ships binary
    packages and is the easiest route. With Homebrew R (`brew install r`) packages compile from
    source and also need `brew install openssl@3 nlopt pkgconf`.
 2. **Install the R packages:**
@@ -99,4 +99,4 @@ Run from inside `r_validation/` so the notebooks can import `validation_helpers.
 - Engines outside the current scope: `foe.srm`, `foe.behavioral`, `foe.forecasting` and
   `foe.sequential.gsd_engine`.
 - Helpers in the validated engines that aren't checked yet: non-inferiority, CUPED / Lin
-  adjustment, aggregate œÜ estimation and bootstrap power.
+  adjustment, aggregate φ estimation and bootstrap power.
