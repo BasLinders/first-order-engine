@@ -74,7 +74,7 @@ first-order-engine/
 │   ├── srm/
 │   │   └── operations.py        # SRMEngine (chi-squared traffic checks)
 │   ├── interaction/
-│   │   └── operations.py        # InteractionEngine (binomial GLM)
+│   │   └── operations.py        # InteractionEngine (binomial GLM interaction modelling)
 │   ├── behavioral/
 │   │   └── operations.py        # BehavioralEngine (funnel & segment analysis)
 │   ├── continuous/
@@ -88,6 +88,18 @@ first-order-engine/
 │           ├── experiments.py   # Baseline/binomial/continuous/sequential/interaction builders
 │           ├── event_log.py     # Process-mining event-log extraction
 │           └── timeseries.py    # Daily time-series extraction, feeds ForecastingEngine
+│
+├── r_validation/                # Checks FOE's statistics against independent R implementations
+│   ├── README.md                # Scope, tolerances, findings, setup and running instructions
+│   ├── install_r_packages.R     # Installs the R packages the notebooks use
+│   ├── validation_helpers.py    # Checks class: pass/fail table, raises on any mismatch
+│   ├── 01_frequentist_ztest.ipynb       # FrequentistEngine vs binomial glm, DescTools, msm
+│   ├── 02_boschloo_exact.ipynb          # BoschlooEngine vs exact2x2::boschloo
+│   ├── 03_bayesian_beta_binomial.ipynb  # BayesianEngine vs exact numerical integration
+│   ├── 04_continuous_metrics.ipynb      # ContinuousMetricEngine vs MASS, car, fBasics
+│   ├── 05_pretest_planning.ipynb        # PretestEngine vs power.prop.test, TrialSize, pwr
+│   ├── 06_sequential_msprt.ipynb        # SequentialEngine vs integrated mixture LR
+│   └── 07_interaction_glm.ipynb         # InteractionEngine vs binomial glm
 │
 └── tests/
     ├── conftest.py
