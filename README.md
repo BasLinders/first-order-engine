@@ -1,215 +1,99 @@
-# First Order Engine
+# R validation of Hexkit's statistics
 
-**First Order Engine (FOE)** is a high-fidelity statistical framework designed for end-to-end experimentation analysis. It moves beyond basic A/B testing by synthesizing multiple statistical methodologies — Bayesian, Frequentist, and Sequential — into a single, unified source of truth for agency-grade decision-making.
+These notebooks check the statistics Hexkit runs through **First Order Engine (FOE)** against
+independent R implementations. Each notebook calls the FOE engine the way Hexkit does, computes
+the same quantity in R through `rpy2`'s `%%R` cells, and compares the two in a pass/fail table.
+The last cell raises if any comparison fails, so each notebook also works as a test.
 
-FOE is, by default, a **pure Python library**. It has no opinion about where your data comes from, where your results go, or what infrastructure you run it on. It is imported and called; everything else is someone else's job. The one deliberate exception is `foe.data` (see [Data Extraction](#data-extraction-opt-in) below) — isolated, opt-in, and never imported by any stats engine.
+Scope: the FOE engines that Hexkit pages and `utility/automation_engine.py` import directly.
+See [docs/foe-enginization-status.md](../docs/foe-enginization-status.md) for that list.
 
----
+## Notebooks
 
-## The Anatomy of the Name
+| Notebook | FOE engine | Hexkit surface | R reference | Checks |
+|---|---|---|---|---|
+| [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
+| [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
+| [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight | 21 |
+| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic, NB, Gamma, hurdle), `fit_gamma`, `fit_negbin`, `winsorize_series`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `wilcox.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `msm::deltamethod` | 55 |
+| [05_pretest_planning](05_pretest_planning.ipynb) | `PretestEngine` sample size, power, MDE tables (static and forecast), RPV moments | pre-test analysis, automation | `power.prop.test`, `TrialSize::TwoSampleMean.Equality`, `pwr::pwr.norm.test`, simulation | 97 |
+| [06_sequential_msprt](06_sequential_msprt.ipynb) | `SequentialEngine` LLR, boundaries, power, `process_test_trajectory` | sequential analysis | numerical integration of the mixture likelihood ratio, `pwr::pwr.norm.test` | 131 |
+| [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
-* **First Order:** Refers to **First-Order Logic** and **First-Order Principles**. It signifies that the engine performs foundational, predicate-based reasoning on raw data, stripping away marketing noise to find the fundamental mathematical truth of an effect.
-* **Engine:** Built for **Stateless Automation and Scale**. A high-performance computational layer designed to replace fragile spreadsheets with rigorous, repeatable, platform-agnostic code.
+All 625 checks pass on the committed run (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
+FOE at the SHA pinned in `../requirements.txt`).
 
----
+### Tolerances
 
-## Two-Repository Architecture
+Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
 
-FOE is one half of a two-repository system. The separation of concerns is deliberate:
+- **Boschloo p-values** (abs 5e-4): scipy and exact2x2 each search for the nuisance-parameter
+  maximum numerically, on different grids.
+- **Bayesian quantities** (abs 3e-3 on probabilities, 2–3% relative on expectations): FOE uses
+  Monte Carlo and R uses exact integration, so the gap is Monte Carlo error. With 1M draws the
+  observed differences are about 0.1%.
+- **RPV moments** (1%): checked against a simulated sample.
+- **Two-sided MDE** (1e-4 relative): FOE's closed form leaves out the far rejection tail.
 
-| Repository | Role |
-|---|---|
-| **`first-order-engine`** *(this repo)* | Pure Python library. Statistical computation only, plus one opt-in exception: `foe.data` (BigQuery/GA4 extraction — see below), gated behind an extra and never imported by the stats engines. |
-| [`first-order-pipeline`](https://github.com/BasLinders/first-order-pipeline) | ETL pipeline. Fetches data from BigQuery, imports FOE, runs the engines, pushes results to Airtable (DEFERRED). |
+## What the validation turned up
 
-The pipeline repo installs FOE as a dependency (`pip install git+https://github.com/BasLinders/first-order-engine.git@main`) and calls it like any other Python package. The stats engines (`foe.frequentist`, `foe.bayesian`, `foe.sequential`, etc.) never know or care that BigQuery or Airtable exist — `foe.data.DataEngine` is how a caller *gets* data into a shape those engines accept, not something the engines depend on.
+None of these is a bug in FOE, but each one matters for reading or extending the results:
 
-```mermaid
-graph LR
-    subgraph "first-order-pipeline"
-        BQ[(BigQuery)] -->|fetch_bigquery_data| T[Transform to ExperimentInput]
-        T --> FOE
-        FOE -->|statistical results| AT[Airtable]
-    end
+- **`run_comparison_suite` with `unit = per_transaction` (the config default) drops zero rows
+  before any test**, including the Negative Binomial count test. For "items per order" that is
+  correct. For a per-visitor count KPI with real zeros, use `unit = per_visitor`. With the
+  default, the NB is fit to positive counts only and gives a different answer (notebook 04, §2).
+- **`ContinuousMetricEngine.fit_gamma` is more precise than `MASS::fitdistr`.** It agrees with the
+  exact Gamma MLE to about 1e-5, while `fitdistr` is off by about 0.1% in the shape parameter.
+  That is enough to move Gamma LRT p-values noticeably, so notebook 04 uses the exact MLE as the
+  reference.
+- **Mann-Whitney exact vs asymptotic:** scipy's `method="auto"` switches to the exact test when
+  either arm has ≤ 8 rows and there are no ties. R's `wilcox.test` uses a different rule, so the
+  R side reproduces scipy's.
+- **`pwr.norm.test` solved for the effect size** uses a loose internal tolerance (~1e-4). Notebook
+  05 inverts its power function with a tight `uniroot` instead.
 
-    subgraph "first-order-engine (this repo)"
-        FOE[foe.frequentist\nfoe.bayesian\nfoe.sequential\n...]
-    end
-```
+## Setup
 
-This design means FOE can be integrated into any other platform — a Django app, a Streamlit dashboard, a Jupyter notebook, a different cloud provider — simply by importing it. The pipeline is an illustrative, production-ready reference implementation of one such integration.
+1. **Install R** (≥ 4.3). The CRAN installer from <https://cran.r-project.org> ships binary
+   packages and is the easiest route. With Homebrew R (`brew install r`) packages compile from
+   source and also need `brew install openssl@3 nlopt pkgconf`.
+2. **Install the R packages:**
+   ```bash
+   Rscript r_validation/install_r_packages.R
+   ```
+3. **Install the Python side.** This uses Hexkit's own requirements, so FOE, scipy and
+   statsmodels match the app's versions:
+   ```bash
+   pip install -r r_validation/requirements.txt
+   ```
+   `rpy2` finds R through `R_HOME` or `R` on your `PATH`.
 
----
+## Running
 
-## Repository Structure
-
-```text
-first-order-engine/
-│
-├── pyproject.toml               # Build config, dependencies, pytest & coverage settings
-├── README.md
-├── .flake8
-├── .github/
-│   └── workflows/
-│       └── test.yml             # Lint + unit tests across Python 3.10–3.13
-│
-├── foe/                         # The importable package
-│   ├── __init__.py
-│   ├── core/
-│   │   ├── models.py            # Pydantic input/output models (ExperimentInput, etc.)
-│   │   ├── validators.py        # Cross-field validation logic
-│   │   └── priors.py            # Informed Beta prior construction
-│   ├── frequentist/
-│   │   ├── operations.py        # FrequentistEngine (z-test, Sidak, bootstrap power)
-│   │   └── confidence.py        # Non-inferiority testing
-│   ├── bayesian/
-│   │   └── operations.py        # BayesianEngine (Beta-Binomial, lift prior, monetary projection)
-│   ├── sequential/
-│   │   └── operations.py        # SequentialEngine (LLR bounds, trajectory processing)
-│   ├── pretest/
-│   │   ├── operations.py        # PretestEngine (sample size, MDE)
-│   │   └── forecasting.py       # TrafficForecastingEngine: Prophet-based traffic forecasting
-│   ├── forecasting/
-│   │   └── operations.py        # ForecastingEngine (conversions/revenue, holidays, covariates)
-│   ├── srm/
-│   │   └── operations.py        # SRMEngine (chi-squared traffic checks)
-│   ├── interaction/
-│   │   └── operations.py        # InteractionEngine (OLS interaction modelling)
-│   ├── behavioral/
-│   │   └── operations.py        # BehavioralEngine (funnel & segment analysis)
-│   ├── continuous/
-│   │   └── operations.py        # ContinuousMetricEngine (revenue, CUPED)
-│   ├── viz/
-│   │   └── operations.py        # VizEngine (JSON-ready chart coordinates)
-│   └── data/                    # Opt-in I/O exception — requires `pip install foe[bigquery]`
-│       ├── engine.py            # DataEngine (OAuth, BQ client, execution, extraction recipes)
-│       └── sql/
-│           ├── ga4.py           # Shared GA4 events_* primitives (table ref, date filter, escaping)
-│           ├── experiments.py   # Baseline/binomial/continuous/sequential/interaction builders
-│           ├── event_log.py     # Process-mining event-log extraction
-│           └── timeseries.py    # Daily time-series extraction, feeds ForecastingEngine
-│
-└── tests/
-    ├── conftest.py
-    ├── test_core.py             # priors, validators, models
-    ├── test_frequentist.py      # FrequentistEngine + confidence
-    ├── test_bayesian.py         # BayesianEngine (probability + monetary)
-    └── integration/
-        └── test_api_handlers.py
-```
-
----
-
-## Quick Start
-
-```python
-from foe.core.models import ExperimentInput
-from foe.frequentist.operations import FrequentistEngine
-from foe.bayesian.operations import BayesianEngine, get_beta_prior, get_lift_prior
-
-# --- Frequentist ---
-data = ExperimentInput(
-    visitors=[2000, 2000],
-    conversions=[200, 260],
-    labels=["Control", "Challenger"],
-)
-
-freq_results = FrequentistEngine().run_synthesis(data)
-for r in freq_results:
-    print(r.conclusion)
-
-# --- Bayesian ---
-bayes_results = BayesianEngine().run_probability_analysis(
-    data=data,
-    beta_prior=get_beta_prior(),
-    lift_prior=get_lift_prior(0.0, "uninformative"),
-)
-for r in bayes_results:
-    print(f"{r.variant_label}: {r.prob_being_best:.1%} probability of being best")
-```
-
-**Installation:**
-```bash
-pip install git+https://github.com/BasLinders/first-order-engine.git@main
-```
-
----
-
-## Data Extraction (opt-in)
-
-`foe.data.DataEngine` connects to BigQuery/GA4 and builds the SQL to extract
-data — experiment exports for `PretestEngine`/the frequentist and Bayesian
-engines, raw event logs for process mining, and daily time series for
-`ForecastingEngine`. It is the one deliberate exception to "no I/O" above:
-isolated in its own subpackage, gated behind an extra, and never imported by
-any stats engine — installing plain `foe` never pulls in `google-cloud-bigquery`.
+Interactively:
 
 ```bash
-pip install "foe[bigquery]"
+cd r_validation && jupyter lab
 ```
 
-```python
-from datetime import date
-from foe.core.models import BQConnectionConfig, DateRange, TimeSeriesExtractionParams, TimeSeriesMetric
-from foe.data import DataEngine
+Headless, as a test run (fails on the first notebook with a mismatch):
 
-engine = DataEngine.from_credentials(my_google_credentials, project="my-gcp-project")
-
-params = TimeSeriesExtractionParams(
-    connection=BQConnectionConfig(project="my-gcp-project", dataset="analytics_123456789"),
-    date_range=DateRange(start_date=date(2026, 1, 1), end_date=date(2026, 6, 30)),
-    metrics=[TimeSeriesMetric.VISITORS, TimeSeriesMetric.CONVERSIONS, TimeSeriesMetric.REVENUE],
-)
-daily_df = engine.extract_timeseries(params)  # -> straight into ForecastingEngine
+```bash
+cd r_validation
+for nb in 0*.ipynb; do jupyter nbconvert --to notebook --execute --inplace "$nb" || break; done
 ```
 
-`DataEngine.build_auth_url`/`exchange_code` handle Google's OAuth dance without
-assuming any particular web framework — a caller (Streamlit, Flask, a CLI)
-decides how the auth URL is served and how the resulting `Credentials` are
-persisted between requests; DataEngine only knows about Google's OAuth/BigQuery
-APIs. See `foe/data/engine.py` and `foe/core/models.py`'s "Data extraction"
-section for the full surface.
+Run from inside `r_validation/` so the notebooks can import `validation_helpers.py`.
 
----
+## Not covered yet
 
-## Core Algorithmic Pillars
-
-### 1. Hybrid Inference (Bayesian & Frequentist)
-FOE calculates both traditional **p-values** for significance thresholds and **Bayesian Posterior Probabilities** to provide intuitive "Probability of Being Best" metrics for stakeholders.
-
-### 2. "Always Valid" Sequential Analysis
-Unlike traditional alpha-spending models, FOE employs an **Always Valid** sequential method. By utilizing **Log-Likelihood Ratios (LLR)** and dynamic upper/lower bounds based on $\alpha$ and $\beta$, the engine allows for continuous monitoring and early-exit functionality without inflating Type I error or requiring a fixed sample size.
-
-### 3. Automated SRM Detection
-Sample Ratio Mismatch (SRM) is the "silent killer" of experiments. The engine monitors traffic distributions using Chi-Squared goodness-of-fit tests to flag data quality issues before they corrupt results.
-
-### 4. Interaction & Interference Analysis
-FOE identifies how Test 1 affects Test $N$. It quantifies interaction effects in overlapping segments, ensuring that hidden correlations don't lead to false conclusions in complex testing environments.
-
-### 5. Automated Decision Trees
-Not all data is Normal. The engine automatically evaluates data distribution (normality, variance) to choose the mathematically correct test — dynamically switching between **ANOVA**, **Welch's**, and **Non-Parametric** (Mann-Whitney / Kruskal-Wallis) models.
-
-### 6. Advanced Test Planning
-Integrated duration calculators ensure every experiment is sized correctly for the expected MDE (Minimum Detectable Effect), with analytical and bootstrap-based power estimates.
-
-### 7. Strategic Synthesis
-The engine doesn't just output raw numbers — it performs a final Synthesis. By balancing Frequentist certainty and Bayesian risk, FOE generates a **natural language verdict** that translates complex statistics into a definitive business action: Winner Declared, Loss Averted, or Continue Testing.
-
----
-
-## Technical Overview
-
-* **Sequential Logic:** LLR-based bounds derived from $\alpha$ (Type I error) and $\beta$ (Type II error), ensuring validity at any sample size ($n$).
-* **Multiple Comparisons:** Šidák correction applied automatically when more than two variants are present.
-* **Monetary Projection:** Beta-Binomial posterior combined with log-normal AOV sampling to produce expected uplift, risk, and net contribution over a configurable projection horizon.
-* **Safeguards:** Built-in protection against Simpson's Paradox, outlier variance, and False Discovery Rates (FDR).
-
----
-
-## Why First Order Engine?
-
-Most tools tell you whether a result is **significant**. The First Order Engine also tells you **where the effect comes from** (which segments, which part of the funnel, how tests interact), what it's **worth in money with honest uncertainty**, and lets you monitor a test **continuously** without inflating false positives. Its statistics are validated against independent R implementations.
-
----
-
-*Developed for high-stakes experimentation and strategic growth analysis.*
+- `foe.pretest.forecasting.TrafficForecastingEngine` (Prophet traffic forecast, automation
+  only). This could be checked against R's `prophet` package, but fitted Prophet models are
+  only loosely reproducible across languages.
+- The CV-constant (unequal-variance) branch of the continuous sample-size formula has no
+  off-the-shelf R equivalent.
+- FOE modules Hexkit does not import yet (`foe.srm`, `foe.behavioral`, `foe.forecasting`,
+  `foe.sequential.gsd_engine`). These can follow as they get wired into Hexkit.
+- FOE helpers Hexkit does not call (non-inferiority, CUPED / Lin adjustment, aggregate φ
+  estimation, bootstrap power).
