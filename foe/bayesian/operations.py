@@ -108,6 +108,26 @@ def prior_prob_positive_lift(lift_prior: Optional[LiftPrior]) -> float:
     return float(norm.cdf(lift_prior.mean_log_lift / lift_prior.std_log_lift))
 
 
+def mc_margin(p: float, ess: float, z: float = 1.96) -> float:
+    """
+    Monte Carlo margin of error for a probability estimated from importance-
+    weighted draws: z * sqrt(p * (1 - p) / ess).
+
+    Pass a result's probability (e.g. prob_beat_control) and its
+    effective_sample_size. With the default z = 1.96 this is the half-width
+    of an approximate 95% interval for the Monte Carlo error alone; it says
+    nothing about uncertainty from the data, which the probability itself
+    already expresses.
+    """
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"p must be in [0, 1], got {p!r}.")
+    if ess <= 0:
+        raise ValueError(f"ess must be positive, got {ess!r}.")
+    if z <= 0:
+        raise ValueError(f"z must be positive, got {z!r}.")
+    return float(z * np.sqrt(p * (1.0 - p) / ess))
+
+
 class BayesianEngine:
     """
     The FOE Bayesian Engine handles Beta-Binomial posterior updates,

@@ -9,6 +9,7 @@ from foe.bayesian.operations import (
     get_lift_prior,
     BetaPrior,
     prior_prob_positive_lift,
+    mc_margin,
 )
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
@@ -682,3 +683,34 @@ def test_explicit_beta_prior_overrides_biz_case():
     a = _biz_prior_run(500.0, 500.0, beta_prior=BetaPrior(1.0, 1.0))
     b = _biz_prior_run(1.0, 1.0)
     assert a["expected_uplift"] == b["expected_uplift"]
+
+
+# --- Monte Carlo margin ---
+
+def test_mc_margin_formula_and_validation():
+    assert mc_margin(0.5, 10_000) == pytest.approx(1.96 * 0.005)
+    assert mc_margin(0.9, 2_500, z=1.0) == pytest.approx(np.sqrt(0.09 / 2_500))
+    assert mc_margin(0.0, 100) == 0.0
+    for bad in [dict(p=1.2, ess=10), dict(p=0.5, ess=0), dict(p=0.5, ess=10, z=0)]:
+        with pytest.raises(ValueError):
+            mc_margin(**bad)
+
+
+def test_mc_margin_matches_seed_to_seed_spread():
+    """
+    Under a skeptical lift prior (ESS well below n_samples), the spread of
+    prob_beat_control across seeds should match mc_margin(p, ess) / z.
+    """
+    data = make_experiment([3000, 3000], [90, 110])
+    prior = get_lift_prior(0.0, "skeptical")
+    runs = [
+        BayesianEngine(seed=s).run_probability_analysis(
+            data, lift_prior=prior, n_samples=4_000
+        )[0]
+        for s in range(200)
+    ]
+    probs = np.array([r.prob_beat_control for r in runs])
+    ess = np.mean([r.effective_sample_size for r in runs])
+    assert ess < 0.8 * 4_000
+    predicted_sd = mc_margin(probs.mean(), ess, z=1.0)
+    assert probs.std(ddof=1) == pytest.approx(predicted_sd, rel=0.25)
