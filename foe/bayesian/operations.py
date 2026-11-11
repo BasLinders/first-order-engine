@@ -206,8 +206,9 @@ class BayesianEngine:
 
     def _sample_aov(self, mean_aov: float, cv: float, n_samples: int) -> np.ndarray:
         """
-        Draws AOV samples from a log-normal distribution parameterised so that
-        E[AOV] = mean_aov exactly — variance is added without any bias.
+        Draws AOV samples from a log-normal distribution with mean mean_aov
+        and coefficient of variation cv (sd = cv * mean_aov), parameterised so
+        that E[AOV] = mean_aov exactly — variance is added without any bias.
         A non-positive mean_aov yields zeros instead of log(0) = -inf.
         """
         if mean_aov <= 0:
@@ -412,6 +413,12 @@ class BayesianEngine:
         Each draw's daily revenue difference is
         (cr_variant * aov_variant - cr_control * aov_control) * traffic, so an
         AOV difference counts even at equal conversion rates.
+
+        aov_variant and aov_control are draws of each arm's *mean* AOV: log-
+        normal with mean biz_case.aovs[label] and sd aov_cv * AOV / sqrt(orders),
+        where aov_cv is the order-to-order coefficient of variation of order
+        values and orders is approximated by the arm's conversions. Pass the
+        observed CV when it is known; aov_cv=0 treats the AOVs as exact.
         expected_uplift / expected_risk are the projection period times the
         weighted mean of its positive / negative part. prob_beat_control stays
         rate-based (it matches run_probability_analysis); prob_revenue_better
@@ -461,27 +468,35 @@ class BayesianEngine:
 
         daily_visitors_per_arm = float(np.mean(visitors)) / biz_case.runtime_days
 
-        # One mean-preserving AOV noise factor per draw, shared by all arms.
-        # Independent per-arm noise would let order-value spread (cv ~ 0.5),
-        # not the experiment, decide the sign of the revenue difference.
-        aov_noise = self._sample_aov(1.0, aov_cv, n_simulations)
+        # Each arm's mean AOV is an estimate from its own orders, so it is
+        # uncertain: sd = aov_cv * AOV / sqrt(orders), independent per arm,
+        # with conversions standing in for orders. This is the same model as
+        # ContinuousMetricEngine.estimate_monetary_impact_per_variant
+        # (se = std / sqrt(n_orders)) with std = aov_cv * AOV. Draws are made
+        # once per arm, so every challenger is compared to the same control.
+        aov_draws = [
+            self._sample_aov(
+                biz_case.aovs.get(label, 0.0),
+                aov_cv / np.sqrt(max(conversions[k], 1)),
+                n_simulations,
+            )
+            for k, label in enumerate(variant_labels)
+        ]
 
         control_cr = samples[0]
-        control_label = variant_labels[0]
-        control_aov = biz_case.aovs.get(control_label, 0.0)
+        control_aov = aov_draws[0]
 
         results = []
         for i in range(1, num_variants):
             variant_label = variant_labels[i]
             variant_cr = samples[i]
-            variant_aov = biz_case.aovs.get(variant_label, 0.0)
+            variant_aov = aov_draws[i]
 
             # Daily revenue difference at equal traffic per arm, each arm
             # valued at its own AOV.
             rev_diff = (
                 (variant_cr * variant_aov - control_cr * control_aov)
                 * daily_visitors_per_arm
-                * aov_noise
             )
 
             # Rate-based, so it matches run_probability_analysis.

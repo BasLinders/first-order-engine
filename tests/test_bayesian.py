@@ -366,11 +366,11 @@ def test_biz_case_accepted_via_experiment_input():
     assert data.biz_case.aovs["Control"] == 50.0
 
 
-def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
+def test_aov_uncertainty_keeps_net_contribution_unbiased(engine, uninformative_priors):
     """
-    A very low CV should produce monetary results close to those from a
-    high-CV run, confirming the log-normal parameterisation is unbiased:
-    E[AOV] = mean_aov regardless of spread.
+    AOV draws are mean-preserving, so the net contribution E[revenue diff]
+    is the same at any aov_cv; only its spread (and with it uplift and risk
+    separately) grows.
     """
     beta_prior, lift_prior = uninformative_priors
     visitors = [5000, 5000]
@@ -382,25 +382,20 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
         projection_period=180,
     )
 
-    result_low_cv = engine.run_monetary_projection(
-        visitors=visitors, conversions=conversions,
-        biz_case=biz_case,
-        variant_labels=labels,
-        beta_prior=beta_prior, lift_prior=lift_prior,
-        aov_cv=0.01,
-    )
-    result_high_cv = engine.run_monetary_projection(
-        visitors=visitors, conversions=conversions,
-        biz_case=biz_case,
-        variant_labels=labels,
-        beta_prior=beta_prior, lift_prior=lift_prior,
-        aov_cv=1.5,
-    )
+    def run(cv):
+        return engine.run_monetary_projection(
+            visitors=visitors, conversions=conversions,
+            biz_case=biz_case,
+            variant_labels=labels,
+            beta_prior=beta_prior, lift_prior=lift_prior,
+            aov_cv=cv, n_simulations=400_000,
+        )[0]
 
-    # Point estimates should converge regardless of spread (within 10%).
-    low = result_low_cv[0]["expected_uplift"]
-    high = result_high_cv[0]["expected_uplift"]
-    assert abs(low - high) / max(abs(low), 1e-6) < 0.10
+    low, high = run(0.0), run(1.5)
+    assert high["expected_total_contribution"] == pytest.approx(
+        low["expected_total_contribution"], rel=0.03
+    )
+    assert high["expected_risk"] > low["expected_risk"]
 
 
 # --- Lift prior correctness ---
@@ -567,14 +562,15 @@ def _monetary(engine, visitors, conversions, aovs, **kwargs):
 
 def test_monetary_equal_aov_matches_rate_formula(engine):
     """
-    With equal AOVs the revenue difference is AOV * (b - a) * traffic, so the
-    projection must equal period * traffic * AOV * E[(b - a)+] from
-    run_probability_analysis (the pre-per-arm-AOV result), within MC error.
+    With equal, exactly known AOVs (aov_cv=0) the revenue difference is
+    AOV * (b - a) * traffic, so the projection must equal
+    period * traffic * AOV * E[(b - a)+] from run_probability_analysis,
+    within MC error.
     """
     visitors, conversions = [9000, 9100], [270, 300]
     prior = get_lift_prior(0.0, "moderate")
     r = _monetary(engine, visitors, conversions, {"Control": 50.0, "Challenger": 50.0},
-                  lift_prior=prior, n_simulations=400_000)[0]
+                  lift_prior=prior, aov_cv=0.0, n_simulations=400_000)[0]
     p = BayesianEngine(seed=7).run_probability_analysis(
         make_experiment(visitors, conversions), lift_prior=prior, n_samples=400_000
     )[0]
@@ -735,3 +731,39 @@ def test_monetary_requires_variant_labels():
             visitors=[1000, 1000], conversions=[100, 110],
             biz_case=BusinessCaseInput(aovs={"A": 50.0, "B": 50.0}, runtime_days=14),
         )
+
+
+# --- Monetary projection: uncertainty in each arm's mean AOV ---
+
+def test_aov_uncertainty_widens_risk_at_equal_aov():
+    """
+    Each arm's mean AOV is uncertain (sd = aov_cv * AOV / sqrt(orders)), so
+    with equal AOVs a larger aov_cv must raise the expected risk and pull
+    prob_revenue_better toward 0.5, while prob_beat_control (rate-based)
+    does not move. A shared or no AOV noise leaves all three unchanged.
+    """
+    visitors, conversions = [9000, 9100], [270, 300]
+    aovs = {"Control": 50.0, "Challenger": 50.0}
+    exact = _monetary(BayesianEngine(seed=31), visitors, conversions, aovs,
+                      aov_cv=0.0, n_simulations=400_000)[0]
+    noisy = _monetary(BayesianEngine(seed=31), visitors, conversions, aovs,
+                      aov_cv=1.0, n_simulations=400_000)[0]
+    assert noisy["expected_risk"] > 2.0 * exact["expected_risk"]
+    assert abs(noisy["prob_revenue_better"] - 0.5) < abs(exact["prob_revenue_better"] - 0.5) - 0.05
+    assert noisy["prob_beat_control"] == exact["prob_beat_control"]
+
+
+def test_aov_uncertainty_shrinks_with_more_orders():
+    """
+    The same AOV gap with 100x the orders (and visitors) is far more certain:
+    sd of each mean AOV falls by 10x, so prob_revenue_better moves toward 1.
+    With 400 orders, rate uncertainty alone gives ~0.73; the AOV uncertainty
+    (cv 1.5 / sqrt(400) = 7.5% per arm) brings it to ~0.63.
+    """
+    aovs = {"Control": 50.0, "Challenger": 52.0}
+    few = _monetary(BayesianEngine(seed=32), [2000, 2000], [400, 400], aovs,
+                    aov_cv=1.5, n_simulations=200_000)[0]
+    many = _monetary(BayesianEngine(seed=32), [200_000, 200_000], [40_000, 40_000], aovs,
+                     aov_cv=1.5, n_simulations=200_000)[0]
+    assert 0.58 < few["prob_revenue_better"] < 0.68
+    assert many["prob_revenue_better"] > 0.95
