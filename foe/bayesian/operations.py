@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Any, Literal, Optional
 
@@ -390,8 +391,8 @@ class BayesianEngine:
         visitors: List[int],
         conversions: List[int],
         biz_case: BusinessCaseInput,
-        prob_best_overall: List[float],
-        variant_labels: List[str],
+        prob_best_overall: Optional[List[float]] = None,
+        variant_labels: Optional[List[str]] = None,
         beta_prior: Optional[BetaPrior] = None,
         lift_prior: Optional[LiftPrior] = None,
         aov_cv: float = 0.5,
@@ -418,7 +419,26 @@ class BayesianEngine:
 
         beta_prior defaults to Beta(biz_case.alpha_prior, biz_case.beta_prior);
         an explicit beta_prior takes precedence.
+
+        prob_best_overall in the results is computed from this projection's
+        own weighted draws (rate-based, like run_probability_analysis), so it
+        is consistent with the other numbers in the same result. The
+        prob_best_overall argument is deprecated and ignored.
+
+        variant_labels is required; it defaults to None only so that the
+        deprecated prob_best_overall before it can be optional.
         """
+        if prob_best_overall is not None:
+            warnings.warn(
+                "run_monetary_projection(prob_best_overall=...) is deprecated and "
+                "ignored: prob_best_overall is now computed from the projection's "
+                "own draws.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if variant_labels is None:
+            raise ValueError("variant_labels is required.")
+
         beta_prior = beta_prior or BetaPrior(
             alpha=biz_case.alpha_prior, beta=biz_case.beta_prior
         )
@@ -435,6 +455,9 @@ class BayesianEngine:
         samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
         weights = self._compute_joint_lift_weights(samples, lift_prior)
         ess = self._effective_sample_size(weights)
+        prob_best = np.bincount(
+            np.argmax(samples, axis=0), weights=weights, minlength=num_variants
+        )
 
         daily_visitors_per_arm = float(np.mean(visitors)) / biz_case.runtime_days
 
@@ -482,7 +505,7 @@ class BayesianEngine:
                 "variant_label": variant_label,
                 "prob_beat_control": prob_beat_control,
                 "prob_revenue_better": prob_revenue_better,
-                "prob_best_overall": prob_best_overall[i],
+                "prob_best_overall": float(prob_best[i]),
                 "expected_uplift": round(uplift, 2),
                 "expected_risk": round(risk, 2),
                 "expected_total_contribution": round(uplift - risk, 2),

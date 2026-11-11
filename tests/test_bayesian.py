@@ -168,17 +168,6 @@ def test_result_fields_are_present(engine, uninformative_priors):
 
 # --- run_monetary_projection ---
 
-def _get_prob_best_overall(engine, visitors, conversions, labels):
-    """Helper to extract prob_best_overall list for monetary projection calls."""
-    results = engine.run_probability_analysis(
-        data=make_experiment(visitors, conversions, labels),
-        beta_prior=get_beta_prior(),
-        lift_prior=get_lift_prior(0.0, "uninformative"),
-    )
-    control_pbb = 1.0 - sum(r.prob_being_best for r in results)
-    return [control_pbb] + [r.prob_being_best for r in results]
-
-
 def test_monetary_positive_uplift_for_better_variant(engine, uninformative_priors):
     """
     A variant with higher CR and higher AOV should produce positive uplift
@@ -197,7 +186,6 @@ def test_monetary_positive_uplift_for_better_variant(engine, uninformative_prior
             runtime_days=30,
             projection_period=180,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -232,7 +220,6 @@ def test_monetary_three_variants_returns_two_results(engine, uninformative_prior
             runtime_days=30,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -267,7 +254,6 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
     beta_prior, lift_prior = uninformative_priors
     visitors = [1000, 1000]
     conversions = [100, 110]
-    labels = ["Control", "Challenger"]
 
     with pytest.raises(ValueError, match="variant_labels has 1 entries but visitors has 2"):
         engine.run_monetary_projection(
@@ -278,7 +264,6 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
                 runtime_days=30,
                 projection_period=90,
             ),
-            prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
             variant_labels=["OnlyOneLabel"],
             beta_prior=beta_prior,
             lift_prior=lift_prior,
@@ -304,7 +289,6 @@ def test_monetary_risk_is_always_non_negative(engine, uninformative_priors):
             runtime_days=30,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -338,7 +322,6 @@ def test_alpha_beta_prior_in_biz_case_influences_projection(engine):
             alpha_prior=1.0,
             beta_prior=1.0,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=BetaPrior(alpha=1.0, beta=1.0),
     )
@@ -354,7 +337,6 @@ def test_alpha_beta_prior_in_biz_case_influences_projection(engine):
             alpha_prior=500.0,
             beta_prior=500.0,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=BetaPrior(alpha=500.0, beta=500.0),
     )
@@ -394,7 +376,6 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
     visitors = [5000, 5000]
     conversions = [250, 300]
     labels = ["Control", "Challenger"]
-    pbo = _get_prob_best_overall(engine, visitors, conversions, labels)
     biz_case = BusinessCaseInput(
         aovs={"Control": 50.0, "Challenger": 50.0},
         runtime_days=30,
@@ -403,14 +384,14 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
 
     result_low_cv = engine.run_monetary_projection(
         visitors=visitors, conversions=conversions,
-        biz_case=biz_case, prob_best_overall=pbo,
+        biz_case=biz_case,
         variant_labels=labels,
         beta_prior=beta_prior, lift_prior=lift_prior,
         aov_cv=0.01,
     )
     result_high_cv = engine.run_monetary_projection(
         visitors=visitors, conversions=conversions,
-        biz_case=biz_case, prob_best_overall=pbo,
+        biz_case=biz_case,
         variant_labels=labels,
         beta_prior=beta_prior, lift_prior=lift_prior,
         aov_cv=1.5,
@@ -547,7 +528,6 @@ def test_monetary_compares_rates_not_volumes(engine):
             runtime_days=14,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         lift_prior=None,
     )[0]
@@ -566,7 +546,6 @@ def test_monetary_zero_aov_does_not_produce_nan(engine):
             runtime_days=14,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
     )[0]
     assert r["expected_uplift"] == 0.0
@@ -581,7 +560,6 @@ def _monetary(engine, visitors, conversions, aovs, **kwargs):
         visitors=visitors,
         conversions=conversions,
         biz_case=BusinessCaseInput(aovs=aovs, runtime_days=14, projection_period=90),
-        prob_best_overall=[0.0] * len(labels),
         variant_labels=labels,
         **kwargs,
     )
@@ -660,7 +638,6 @@ def _biz_prior_run(alpha, beta, **kwargs):
             runtime_days=30, projection_period=90,
             alpha_prior=alpha, beta_prior=beta,
         ),
-        prob_best_overall=[0.0, 0.0],
         variant_labels=["Control", "Challenger"],
         **kwargs,
     )[0]
@@ -714,3 +691,47 @@ def test_mc_margin_matches_seed_to_seed_spread():
     assert ess < 0.8 * 4_000
     predicted_sd = mc_margin(probs.mean(), ess, z=1.0)
     assert probs.std(ddof=1) == pytest.approx(predicted_sd, rel=0.25)
+
+
+# --- prob_best_overall computed inside run_monetary_projection ---
+
+def test_monetary_prob_best_overall_computed_from_own_draws():
+    """
+    prob_best_overall comes from the projection's own weighted draws: it
+    matches run_probability_analysis within MC error, and a passed value is
+    ignored with a DeprecationWarning.
+    """
+    visitors, conversions = [15000, 15000, 15000], [450, 495, 480]
+    labels = ["Control", "B", "C"]
+    prior = get_lift_prior(0.0, "skeptical")
+    biz = BusinessCaseInput(aovs=dict.fromkeys(labels, 50.0), runtime_days=14)
+
+    expected = BayesianEngine(seed=21).run_probability_analysis(
+        make_experiment(visitors, conversions, labels),
+        lift_prior=prior, n_samples=200_000,
+    )
+    with pytest.warns(DeprecationWarning, match="prob_best_overall"):
+        got = BayesianEngine(seed=22).run_monetary_projection(
+            visitors, conversions, biz, [0.9, 0.05, 0.05], labels,
+            lift_prior=prior, n_simulations=200_000,
+        )
+    for e, g in zip(expected, got):
+        assert g["prob_best_overall"] == pytest.approx(e.prob_being_best, abs=0.01)
+        assert g["prob_best_overall"] != 0.05
+
+
+def test_monetary_without_prob_best_overall_does_not_warn(recwarn):
+    BayesianEngine(seed=1).run_monetary_projection(
+        visitors=[1000, 1000], conversions=[100, 110],
+        biz_case=BusinessCaseInput(aovs={"A": 50.0, "B": 50.0}, runtime_days=14),
+        variant_labels=["A", "B"],
+    )
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+
+
+def test_monetary_requires_variant_labels():
+    with pytest.raises(ValueError, match="variant_labels is required"):
+        BayesianEngine(seed=1).run_monetary_projection(
+            visitors=[1000, 1000], conversions=[100, 110],
+            biz_case=BusinessCaseInput(aovs={"A": 50.0, "B": 50.0}, runtime_days=14),
+        )

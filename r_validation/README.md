@@ -15,14 +15,14 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 |---|---|---|---|---|
 | [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
 | [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
-| [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight | 21 |
+| [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight (product prior for 3 arms); per-arm-AOV revenue difference at equal traffic | 39 |
 | [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic, NB, Gamma, hurdle), `fit_gamma`, `fit_negbin`, `winsorize_series`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `wilcox.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `msm::deltamethod` | 55 |
 | [05_pretest_planning](05_pretest_planning.ipynb) | `PretestEngine` sample size, power, MDE tables (static and forecast), RPV moments | pre-test analysis, automation | `power.prop.test`, `TrialSize::TwoSampleMean.Equality`, `pwr::pwr.norm.test`, simulation | 97 |
 | [06_sequential_msprt](06_sequential_msprt.ipynb) | `SequentialEngine` LLR, boundaries, power, `process_test_trajectory` | sequential analysis | numerical integration of the mixture likelihood ratio, `pwr::pwr.norm.test` | 131 |
 | [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
-All 625 checks pass on the committed run (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
-FOE at commit `904170a`).
+All 643 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
+FOE at commit `904170a`; notebook 03 re-run after the per-arm AOV monetary projection change).
 ### Tolerances
 
 Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
