@@ -646,3 +646,39 @@ def test_lift_prior_width_names_and_aliases(width, alias, std, lift):
 def test_lift_prior_unknown_width_raises():
     with pytest.raises(ValueError, match="narrow.*skeptical"):
         get_lift_prior(0.0, "tight")
+
+
+# --- BusinessCaseInput Beta prior ---
+
+def _biz_prior_run(alpha, beta, **kwargs):
+    return BayesianEngine(seed=11).run_monetary_projection(
+        visitors=[1000, 1000],
+        conversions=[100, 150],
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Challenger": 50.0},
+            runtime_days=30, projection_period=90,
+            alpha_prior=alpha, beta_prior=beta,
+        ),
+        prob_best_overall=[0.0, 0.0],
+        variant_labels=["Control", "Challenger"],
+        **kwargs,
+    )[0]
+
+
+def test_biz_case_beta_prior_used_when_no_beta_prior_passed():
+    """
+    Without a beta_prior argument the projection uses Beta(alpha_prior,
+    beta_prior) from the business case, so a strong prior shrinks the lift.
+    """
+    flat = _biz_prior_run(1.0, 1.0)
+    strong = _biz_prior_run(500.0, 500.0)
+    assert strong["expected_uplift"] < 0.8 * flat["expected_uplift"]
+    # Same as passing the prior explicitly (same seed, same draws).
+    explicit = _biz_prior_run(1.0, 1.0, beta_prior=BetaPrior(500.0, 500.0))
+    assert strong["expected_uplift"] == explicit["expected_uplift"]
+
+
+def test_explicit_beta_prior_overrides_biz_case():
+    a = _biz_prior_run(500.0, 500.0, beta_prior=BetaPrior(1.0, 1.0))
+    b = _biz_prior_run(1.0, 1.0)
+    assert a["expected_uplift"] == b["expected_uplift"]

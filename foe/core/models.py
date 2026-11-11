@@ -34,8 +34,20 @@ class BusinessCaseInput(BaseModel):
     projection_period: int = Field(
         183, gt=0, description="Projection period in days (default: 6 months)"
     )
-    alpha_prior: float = Field(1.0, gt=0.0)
-    beta_prior: float = Field(1.0, gt=0.0)
+    alpha_prior: float = Field(
+        1.0, gt=0.0,
+        description=(
+            "Beta prior alpha for every arm's conversion rate in "
+            "run_monetary_projection, used when no beta_prior argument is passed."
+        ),
+    )
+    beta_prior: float = Field(
+        1.0, gt=0.0,
+        description=(
+            "Beta prior beta for every arm's conversion rate in "
+            "run_monetary_projection, used when no beta_prior argument is passed."
+        ),
+    )
 
 
 class ExperimentInput(BaseModel):

@@ -395,8 +395,13 @@ class BayesianEngine:
         weighted mean of its positive / negative part. prob_beat_control stays
         rate-based (it matches run_probability_analysis); prob_revenue_better
         is P(revenue difference > 0).
+
+        beta_prior defaults to Beta(biz_case.alpha_prior, biz_case.beta_prior);
+        an explicit beta_prior takes precedence.
         """
-        beta_prior = beta_prior or get_beta_prior()
+        beta_prior = beta_prior or BetaPrior(
+            alpha=biz_case.alpha_prior, beta=biz_case.beta_prior
+        )
 
         num_variants = len(visitors)
 
