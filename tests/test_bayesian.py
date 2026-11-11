@@ -416,3 +416,160 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
     low = result_low_cv[0]["expected_uplift"]
     high = result_high_cv[0]["expected_uplift"]
     assert abs(low - high) / max(abs(low), 1e-6) < 0.10
+
+
+# --- Lift prior correctness ---
+
+import numpy as np
+from scipy.stats import beta as beta_dist, norm
+
+from foe.bayesian.operations import prior_prob_positive_lift
+
+
+def _exact_prob_beat_control(visitors, conversions, lift_prior, grid=1500):
+    """
+    Grid-integrated P(cr_B > cr_A) under Beta(1,1) x Beta(1,1) x lift prior.
+    Independent of the engine's Monte Carlo/importance-sampling path.
+    """
+    post = [beta_dist(1 + c, 1 + v - c) for v, c in zip(visitors, conversions)]
+    grids = [np.linspace(p.ppf(1e-7), p.ppf(1 - 1e-7), grid) for p in post]
+    pa, pb = np.meshgrid(*grids, indexing="ij")
+    log_f = post[0].logpdf(pa) + post[1].logpdf(pb)
+    if lift_prior is not None:
+        log_f += norm.logpdf(np.log(pb / pa), lift_prior.mean_log_lift, lift_prior.std_log_lift)
+    f = np.exp(log_f - log_f.max())
+    return float((f * (pb > pa)).sum() / f.sum())
+
+
+@pytest.mark.parametrize("skepticism", ["skeptical", "moderate", "uninformative"])
+def test_prob_beat_control_matches_exact_integration(skepticism):
+    """
+    Importance-weighted Monte Carlo must agree with direct numerical
+    integration of the same posterior, including on small samples where
+    the skeptical prior moves the answer by ~20 percentage points.
+    """
+    visitors, conversions = [1000, 1000], [30, 42]
+    lift_prior = get_lift_prior(0.0, skepticism)
+    result = BayesianEngine(seed=1).run_probability_analysis(
+        data=make_experiment(visitors, conversions),
+        lift_prior=lift_prior,
+    )[0]
+    exact = _exact_prob_beat_control(visitors, conversions, lift_prior)
+    assert abs(result.prob_beat_control - exact) < 0.01
+
+
+def test_no_lift_prior_is_plain_beta_binomial():
+    """
+    lift_prior=None must apply no weighting at all: full effective sample
+    size and agreement with the exact Beta-Binomial answer.
+    """
+    visitors, conversions = [1000, 1000], [30, 42]
+    result = BayesianEngine(seed=1).run_probability_analysis(
+        data=make_experiment(visitors, conversions),
+        lift_prior=None,
+    )[0]
+    assert result.effective_sample_size == pytest.approx(result.n_samples)
+    exact = _exact_prob_beat_control(visitors, conversions, None)
+    assert abs(result.prob_beat_control - exact) < 0.005
+
+
+def test_multi_variant_uses_product_of_lift_priors():
+    """
+    With several challengers the joint prior is the product of the
+    per-challenger lift priors. Check P(best) against a reference computed
+    with explicit product weights from an independent draw.
+    """
+    visitors, conversions = [5000, 5000, 5000], [150, 150, 195]
+    lift_prior = get_lift_prior(0.0, "skeptical")
+    results = BayesianEngine(seed=1).run_probability_analysis(
+        data=make_experiment(visitors, conversions),
+        lift_prior=lift_prior,
+        n_samples=200_000,
+    )
+
+    rng = np.random.default_rng(7)
+    s = np.array([rng.beta(1 + c, 1 + v - c, 400_000) for v, c in zip(visitors, conversions)])
+    log_w = sum(
+        norm.logpdf(np.log(s[i] / s[0]), lift_prior.mean_log_lift, lift_prior.std_log_lift)
+        for i in (1, 2)
+    )
+    w = np.exp(log_w - log_w.max())
+    w /= w.sum()
+    ref_best = np.bincount(np.argmax(s, axis=0), weights=w, minlength=3)
+
+    assert results[0].prob_being_best == pytest.approx(ref_best[1], abs=0.005)
+    assert results[1].prob_being_best == pytest.approx(ref_best[2], abs=0.005)
+
+
+def test_effective_sample_size_drops_under_skeptical_prior():
+    data = make_experiment([1000, 1000], [30, 42])
+    flat = BayesianEngine(seed=1).run_probability_analysis(data, lift_prior=None)[0]
+    skeptical = BayesianEngine(seed=1).run_probability_analysis(
+        data, lift_prior=get_lift_prior(0.0, "skeptical")
+    )[0]
+    assert skeptical.effective_sample_size < 0.5 * flat.effective_sample_size
+
+
+def test_prior_prob_positive_lift():
+    assert prior_prob_positive_lift(None) == 0.5
+    assert prior_prob_positive_lift(get_lift_prior(0.0, "skeptical")) == pytest.approx(0.5)
+    # +10% / skeptical: Phi(log(1.1) / 0.1) ~= 0.83 -- a strong directional belief.
+    assert prior_prob_positive_lift(get_lift_prior(10.0, "skeptical")) == pytest.approx(0.8295, abs=1e-3)
+    assert prior_prob_positive_lift(get_lift_prior(-10.0, "moderate")) < 0.5
+
+
+def test_simulate_uplift_distributions_shape_and_location():
+    engine = BayesianEngine(seed=1)
+    dists = engine.simulate_uplift_distributions(
+        data=make_experiment([20000, 20000, 20000], [600, 660, 600]),
+        lift_prior=get_lift_prior(0.0, "moderate"),
+        n_samples=20_000,
+    )
+    assert len(dists) == 2
+    assert all(d.shape == (20_000,) for d in dists)
+    assert 0.05 < np.median(dists[0]) < 0.15   # observed +10%
+    assert abs(np.median(dists[1])) < 0.03     # observed 0%
+
+
+# --- Monetary projection: rate vs volume ---
+
+def test_monetary_compares_rates_not_volumes(engine):
+    """
+    Equal conversions on uneven traffic: the variant's conversion *rate* is
+    ~9% lower, so it must not get a ~50% chance to beat control just
+    because it received more visitors.
+    """
+    visitors, conversions = [10000, 11000], [300, 300]
+    labels = ["Control", "Challenger"]
+    r = engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Challenger": 50.0},
+            runtime_days=14,
+            projection_period=90,
+        ),
+        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+        variant_labels=labels,
+        lift_prior=None,
+    )[0]
+    assert r["prob_beat_control"] < 0.2
+    assert r["expected_total_contribution"] < 0
+
+
+def test_monetary_zero_aov_does_not_produce_nan(engine):
+    visitors, conversions = [1000, 1000], [100, 110]
+    labels = ["Control", "Challenger"]
+    r = engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 0.0, "Challenger": 0.0},
+            runtime_days=14,
+            projection_period=90,
+        ),
+        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
+        variant_labels=labels,
+    )[0]
+    assert r["expected_uplift"] == 0.0
+    assert r["expected_risk"] == 0.0

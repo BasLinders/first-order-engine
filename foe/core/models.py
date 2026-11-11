@@ -168,6 +168,15 @@ class BayesianResult(BaseModel):
     expected_uplift: float
     expected_loss: float
     conclusion: str
+    effective_sample_size: Optional[float] = Field(
+        None,
+        description=(
+            "Kish effective sample size of the lift-prior importance weights. "
+            "Equals n_samples without a lift prior; a small fraction of "
+            "n_samples means the estimates carry more Monte Carlo error."
+        ),
+    )
+    n_samples: Optional[int] = None
     prior_alphas: Optional[List[float]] = None
     prior_betas: Optional[List[float]] = None
     biz_case: Optional[BusinessCaseInput] = None

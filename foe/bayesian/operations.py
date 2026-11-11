@@ -69,6 +69,24 @@ def get_lift_prior(
     )
 
 
+def prior_prob_positive_lift(lift_prior: Optional[LiftPrior]) -> float:
+    """
+    P(lift > 0) implied by the lift prior alone, before seeing any data.
+
+    0.5 means the prior is neutral about direction. Anything else means the
+    prior by itself pushes prob_beat_control toward one side. A non-zero
+    expected lift combined with a narrow ('skeptical') prior is a strong
+    directional belief: +10% / skeptical gives ~0.83 here. Callers should
+    surface this value so the prior's pull on the decision is visible.
+
+    This is the lift-prior component only; the flat Beta(1, 1) base prior is
+    symmetric in log-lift, so it does not move this probability.
+    """
+    if lift_prior is None:
+        return 0.5
+    return float(norm.cdf(lift_prior.mean_log_lift / lift_prior.std_log_lift))
+
+
 class BayesianEngine:
     """
     The FOE Bayesian Engine handles Beta-Binomial posterior updates,
@@ -105,20 +123,44 @@ class BayesianEngine:
             size=(len(visitors), n_samples),
         )
 
-    def _compute_lift_weights(
-        self,
-        control_samples: np.ndarray,
-        challenger_samples: np.ndarray,
-        lift_prior: LiftPrior,
+    @staticmethod
+    def _compute_joint_lift_weights(
+        samples: np.ndarray,
+        lift_prior: Optional[LiftPrior],
     ) -> np.ndarray:
         """
-        Importance weights reflecting how plausible each simulated lift is
-        under the lift prior. Weights sum to 1.
+        Importance weights for the joint (num_variants, n_samples) posterior
+        draws under the lift prior. Weights sum to 1.
+
+        The lift prior is applied independently to every challenger's lift
+        vs control, so the joint prior is the *product* of the per-challenger
+        densities (a sum in log space). One weight vector is shared by every
+        downstream quantity (P(best), P(beat control), uplift, monetary
+        projection), so they all describe the same posterior.
+
+        lift_prior=None means no lift prior: uniform weights, i.e. the plain
+        Beta-Binomial posterior.
         """
-        log_lift = np.log(challenger_samples) - np.log(control_samples)
-        log_w = norm.logpdf(log_lift, lift_prior.mean_log_lift, lift_prior.std_log_lift)
+        n_samples = samples.shape[1]
+        if lift_prior is None or samples.shape[0] < 2:
+            return np.full(n_samples, 1.0 / n_samples)
+
+        log_lift = np.log(samples[1:]) - np.log(samples[0])
+        log_w = norm.logpdf(
+            log_lift, lift_prior.mean_log_lift, lift_prior.std_log_lift
+        ).sum(axis=0)
         w = np.exp(log_w - log_w.max())
         return w / w.sum()
+
+    @staticmethod
+    def _effective_sample_size(weights: np.ndarray) -> float:
+        """
+        Kish effective sample size of normalised importance weights. Equals
+        n_samples when weights are uniform; falls as the prior and the data
+        disagree. A low ESS means the weighted estimates rest on few draws
+        and carry more Monte Carlo error than n_samples suggests.
+        """
+        return float(1.0 / np.sum(weights ** 2))
 
     @staticmethod
     def _weighted_mean_masked(
@@ -148,7 +190,10 @@ class BayesianEngine:
         """
         Draws AOV samples from a log-normal distribution parameterised so that
         E[AOV] = mean_aov exactly — variance is added without any bias.
+        A non-positive mean_aov yields zeros instead of log(0) = -inf.
         """
+        if mean_aov <= 0:
+            return np.zeros(n_samples)
         sigma2 = np.log1p(cv ** 2)
         mu = np.log(mean_aov) - sigma2 / 2
         return self.rng.lognormal(mean=mu, sigma=np.sqrt(sigma2), size=n_samples)
@@ -232,11 +277,12 @@ class BayesianEngine:
     ) -> List[BayesianResult]:
         """
         Calculates Probability of Being Best using vectorized Monte Carlo sampling.
-        Applies lift prior importance weights when provided.
-        Returns one BayesianResult per challenger variant.
+        Applies lift prior importance weights when provided; lift_prior=None
+        means no lift prior (plain Beta-Binomial posterior).
+        Returns one BayesianResult per challenger variant. The control's
+        P(best) is 1 - sum of the challengers' prob_being_best.
         """
         beta_prior = beta_prior or get_beta_prior()
-        lift_prior = lift_prior or get_lift_prior(0.0, "uninformative")
 
         visitors = data.visitors
         conversions = data.conversions
@@ -249,36 +295,26 @@ class BayesianEngine:
         samples = self._sample_posteriors(visitors, conversions, beta_prior, n_samples)
         control_samples = samples[0]
 
-        # Average importance weights across all challengers for "best overall"
-        if num_variants > 1:
-            per_challenger_weights = np.array([
-                self._compute_lift_weights(control_samples, samples[i], lift_prior)
-                for i in range(1, num_variants)
-            ])
-            weights = per_challenger_weights.mean(axis=0)
-            weights /= weights.sum()
-        else:
-            weights = np.ones(n_samples) / n_samples
+        weights = self._compute_joint_lift_weights(samples, lift_prior)
+        ess = self._effective_sample_size(weights)
 
         winner_indices = np.argmax(samples, axis=0)
-        prob_best_overall = np.array([
-            np.average(winner_indices == i, weights=weights)
-            for i in range(num_variants)
-        ])
+        prob_best_overall = np.bincount(
+            winner_indices, weights=weights, minlength=num_variants
+        )
 
         results = []
         for i in range(1, num_variants):
             challenger_samples = samples[i]
-            w = self._compute_lift_weights(control_samples, challenger_samples, lift_prior)
 
             prob_beat_control = float(
-                np.average(challenger_samples > control_samples, weights=w)
+                np.average(challenger_samples > control_samples, weights=weights)
             )
             expected_uplift = float(
-                np.average(np.maximum(challenger_samples - control_samples, 0), weights=w)
+                np.average(np.maximum(challenger_samples - control_samples, 0), weights=weights)
             )
             expected_loss = float(
-                np.average(np.maximum(control_samples - challenger_samples, 0), weights=w)
+                np.average(np.maximum(control_samples - challenger_samples, 0), weights=weights)
             )
             prob_best = float(prob_best_overall[i])
 
@@ -297,10 +333,40 @@ class BayesianEngine:
                     expected_uplift=expected_uplift,
                     expected_loss=expected_loss,
                     conclusion=conclusion,
+                    effective_sample_size=ess,
+                    n_samples=n_samples,
                 )
             )
 
         return results
+
+    def simulate_uplift_distributions(
+        self,
+        data: ExperimentInput,
+        beta_prior: Optional[BetaPrior] = None,
+        lift_prior: Optional[LiftPrior] = None,
+        n_samples: int = 20_000,
+    ) -> List[np.ndarray]:
+        """
+        Posterior draws of the relative conversion-rate uplift
+        (cr_variant - cr_control) / cr_control, one array per challenger.
+
+        Draws are resampled with the joint lift-prior weights (sampling-
+        importance-resampling), so the arrays are unweighted and can be fed
+        straight into a histogram. The same resampled indices are used for
+        every challenger, keeping the arrays jointly consistent.
+        """
+        beta_prior = beta_prior or get_beta_prior()
+
+        samples = self._sample_posteriors(data.visitors, data.conversions, beta_prior, n_samples)
+        weights = self._compute_joint_lift_weights(samples, lift_prior)
+        idx = self.rng.choice(n_samples, size=n_samples, p=weights)
+
+        control = samples[0]
+        return [
+            ((samples[i] - control) / control)[idx]
+            for i in range(1, samples.shape[0])
+        ]
 
     def run_monetary_projection(
         self,
@@ -318,10 +384,14 @@ class BayesianEngine:
         Translates conversion rate posteriors into monetary risk and uplift
         projections. AOV is modelled as a log-normal variable to add realistic
         spread without biasing point estimates. Lift prior weights are applied
-        to all monetary aggregations.
+        to all monetary aggregations; lift_prior=None means no lift prior.
+
+        Variants are compared on conversion *rate*, projected onto the same
+        daily traffic per arm (mean visitors per arm / runtime_days). Comparing
+        raw conversion volumes would let an uneven traffic split decide which
+        arm is "better".
         """
         beta_prior = beta_prior or get_beta_prior()
-        lift_prior = lift_prior or get_lift_prior(0.0, "uninformative")
 
         num_variants = len(visitors)
 
@@ -333,11 +403,11 @@ class BayesianEngine:
 
         # (num_variants, n_simulations)
         samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
-        daily_vol = (
-            samples * np.array(visitors)[:, np.newaxis]
-        ) / biz_case.runtime_days
+        weights = self._compute_joint_lift_weights(samples, lift_prior)
+        ess = self._effective_sample_size(weights)
 
-        control_vol = daily_vol[0]
+        daily_visitors_per_arm = float(np.mean(visitors)) / biz_case.runtime_days
+
         control_cr = samples[0]
         control_label = variant_labels[0]
         control_aov = biz_case.aovs.get(control_label, 0.0)
@@ -345,16 +415,14 @@ class BayesianEngine:
         results = []
         for i in range(1, num_variants):
             variant_label = variant_labels[i]
-            variant_vol = daily_vol[i]
             variant_cr = samples[i]
             variant_aov = biz_case.aovs.get(variant_label, 0.0)
-
-            weights = self._compute_lift_weights(control_cr, variant_cr, lift_prior)
 
             sampled_variant_aov = self._sample_aov(variant_aov, aov_cv, n_simulations)
             sampled_control_aov = self._sample_aov(control_aov, aov_cv, n_simulations)
 
-            diff = variant_vol - control_vol
+            # Daily conversion difference at equal traffic per arm.
+            diff = (variant_cr - control_cr) * daily_visitors_per_arm
             positive_mask = diff > 0
             negative_mask = diff < 0
 
@@ -392,6 +460,8 @@ class BayesianEngine:
                 "expected_risk": round(risk, 2),
                 "expected_total_contribution": round(uplift - risk, 2),
                 "conclusion": conclusion,
+                "effective_sample_size": ess,
+                "n_samples": n_simulations,
             })
 
         return results
