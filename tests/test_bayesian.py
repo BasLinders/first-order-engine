@@ -1,11 +1,14 @@
+import numpy as np
 import pytest
 from pydantic import ValidationError
+from scipy.stats import beta as beta_dist, norm
 
 from foe.bayesian.operations import (
     BayesianEngine,
     get_beta_prior,
     get_lift_prior,
     BetaPrior,
+    prior_prob_positive_lift,
 )
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
@@ -419,12 +422,6 @@ def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
 
 
 # --- Lift prior correctness ---
-
-import numpy as np
-from scipy.stats import beta as beta_dist, norm
-
-from foe.bayesian.operations import prior_prob_positive_lift
-
 
 def _exact_prob_beat_control(visitors, conversions, lift_prior, grid=1500):
     """
