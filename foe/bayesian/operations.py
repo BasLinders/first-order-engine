@@ -162,30 +162,6 @@ class BayesianEngine:
         """
         return float(1.0 / np.sum(weights ** 2))
 
-    @staticmethod
-    def _weighted_mean_masked(
-        values: np.ndarray,
-        weights: np.ndarray,
-        mask: np.ndarray,
-    ) -> float:
-        """
-        Computes a weighted mean over the True positions of mask.
-
-        Normalises the masked weight vector before averaging, so the result
-        is correct even when the prior concentrates all weight on samples
-        that sit outside the mask (which would make weights * mask sum to
-        zero and cause np.average to raise ZeroDivisionError).
-
-        Returns 0.0 if no samples pass the mask or the masked weight sum
-        is effectively zero.
-        """
-        masked_weights = weights * mask
-        weight_sum = masked_weights.sum()
-        if weight_sum <= 0 or not mask.any():
-            return 0.0
-        normalised = masked_weights / weight_sum
-        return float(np.dot(values, normalised))
-
     def _sample_aov(self, mean_aov: float, cv: float, n_samples: int) -> np.ndarray:
         """
         Draws AOV samples from a log-normal distribution parameterised so that
@@ -390,6 +366,14 @@ class BayesianEngine:
         daily traffic per arm (mean visitors per arm / runtime_days). Comparing
         raw conversion volumes would let an uneven traffic split decide which
         arm is "better".
+
+        Each draw's daily revenue difference is
+        (cr_variant * aov_variant - cr_control * aov_control) * traffic, so an
+        AOV difference counts even at equal conversion rates.
+        expected_uplift / expected_risk are the projection period times the
+        weighted mean of its positive / negative part. prob_beat_control stays
+        rate-based (it matches run_probability_analysis); prob_revenue_better
+        is P(revenue difference > 0).
         """
         beta_prior = beta_prior or get_beta_prior()
 
@@ -408,6 +392,11 @@ class BayesianEngine:
 
         daily_visitors_per_arm = float(np.mean(visitors)) / biz_case.runtime_days
 
+        # One mean-preserving AOV noise factor per draw, shared by all arms.
+        # Independent per-arm noise would let order-value spread (cv ~ 0.5),
+        # not the experiment, decide the sign of the revenue difference.
+        aov_noise = self._sample_aov(1.0, aov_cv, n_simulations)
+
         control_cr = samples[0]
         control_label = variant_labels[0]
         control_aov = biz_case.aovs.get(control_label, 0.0)
@@ -418,30 +407,21 @@ class BayesianEngine:
             variant_cr = samples[i]
             variant_aov = biz_case.aovs.get(variant_label, 0.0)
 
-            sampled_variant_aov = self._sample_aov(variant_aov, aov_cv, n_simulations)
-            sampled_control_aov = self._sample_aov(control_aov, aov_cv, n_simulations)
-
-            # Daily conversion difference at equal traffic per arm.
-            diff = (variant_cr - control_cr) * daily_visitors_per_arm
-            positive_mask = diff > 0
-            negative_mask = diff < 0
-
-            prob_beat_control = float(np.average(positive_mask, weights=weights))
-            prob_control_better = float(np.average(negative_mask, weights=weights))
-
-            expected_daily_gain = self._weighted_mean_masked(
-                values=diff * sampled_variant_aov,
-                weights=weights,
-                mask=positive_mask,
-            )
-            expected_daily_loss = self._weighted_mean_masked(
-                values=np.abs(diff) * sampled_control_aov,
-                weights=weights,
-                mask=negative_mask,
+            # Daily revenue difference at equal traffic per arm, each arm
+            # valued at its own AOV.
+            rev_diff = (
+                (variant_cr * variant_aov - control_cr * control_aov)
+                * daily_visitors_per_arm
+                * aov_noise
             )
 
-            uplift = expected_daily_gain * biz_case.projection_period * prob_beat_control
-            risk = expected_daily_loss * biz_case.projection_period * prob_control_better
+            # Rate-based, so it matches run_probability_analysis.
+            prob_beat_control = float(np.average(variant_cr > control_cr, weights=weights))
+            prob_revenue_better = float(np.average(rev_diff > 0, weights=weights))
+
+            period = biz_case.projection_period
+            uplift = period * float(np.average(np.maximum(rev_diff, 0.0), weights=weights))
+            risk = period * float(np.average(np.maximum(-rev_diff, 0.0), weights=weights))
 
             conclusion = self.generate_bayesian_conclusion(
                 variant_name=variant_label,
@@ -455,6 +435,7 @@ class BayesianEngine:
                 "variant_index": i,
                 "variant_label": variant_label,
                 "prob_beat_control": prob_beat_control,
+                "prob_revenue_better": prob_revenue_better,
                 "prob_best_overall": prob_best_overall[i],
                 "expected_uplift": round(uplift, 2),
                 "expected_risk": round(risk, 2),

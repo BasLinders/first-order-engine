@@ -570,3 +570,59 @@ def test_monetary_zero_aov_does_not_produce_nan(engine):
     )[0]
     assert r["expected_uplift"] == 0.0
     assert r["expected_risk"] == 0.0
+
+
+# --- Monetary projection: per-arm AOV ---
+
+def _monetary(engine, visitors, conversions, aovs, **kwargs):
+    labels = list(aovs)
+    return engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(aovs=aovs, runtime_days=14, projection_period=90),
+        prob_best_overall=[0.0] * len(labels),
+        variant_labels=labels,
+        **kwargs,
+    )
+
+
+def test_monetary_equal_aov_matches_rate_formula(engine):
+    """
+    With equal AOVs the revenue difference is AOV * (b - a) * traffic, so the
+    projection must equal period * traffic * AOV * E[(b - a)+] from
+    run_probability_analysis (the pre-per-arm-AOV result), within MC error.
+    """
+    visitors, conversions = [9000, 9100], [270, 300]
+    prior = get_lift_prior(0.0, "moderate")
+    r = _monetary(engine, visitors, conversions, {"Control": 50.0, "Challenger": 50.0},
+                  lift_prior=prior, n_simulations=400_000)[0]
+    p = BayesianEngine(seed=7).run_probability_analysis(
+        make_experiment(visitors, conversions), lift_prior=prior, n_samples=400_000
+    )[0]
+    scale = 90 * (np.mean(visitors) / 14) * 50.0
+    assert r["expected_uplift"] == pytest.approx(scale * p.expected_uplift, rel=0.03)
+    assert r["expected_risk"] == pytest.approx(scale * p.expected_loss, rel=0.05)
+    assert r["prob_revenue_better"] == pytest.approx(r["prob_beat_control"], abs=1e-12)
+
+
+@pytest.mark.parametrize("variant_aov, sign", [(60.0, 1), (40.0, -1)])
+def test_monetary_counts_aov_difference_at_equal_rates(engine, variant_aov, sign):
+    """
+    Same conversion rate, challenger AOV 20% higher (lower): the projection
+    must show a revenue gain (loss) of about period * traffic * cr * dAOV,
+    while the rate-based prob_beat_control stays near 0.5.
+    """
+    visitors, conversions = [10000, 10000], [300, 300]
+    r = _monetary(engine, visitors, conversions,
+                  {"Control": 50.0, "Challenger": variant_aov}, lift_prior=None)[0]
+
+    cr = 301 / 10002  # posterior mean under Beta(1, 1)
+    expected_net = 90 * (10000 / 14) * cr * (variant_aov - 50.0)
+    assert r["expected_total_contribution"] == pytest.approx(expected_net, rel=0.05)
+    assert abs(r["prob_beat_control"] - 0.5) < 0.02
+    if sign > 0:
+        assert r["prob_revenue_better"] > 0.95
+        assert r["expected_uplift"] > 0 and r["expected_uplift"] > 20 * r["expected_risk"]
+    else:
+        assert r["prob_revenue_better"] < 0.05
+        assert r["expected_risk"] > 0 and r["expected_risk"] > 20 * r["expected_uplift"]
