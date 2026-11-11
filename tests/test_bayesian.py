@@ -410,7 +410,8 @@ def _exact_prob_beat_control(visitors, conversions, lift_prior, grid=1500):
     pa, pb = np.meshgrid(*grids, indexing="ij")
     log_f = post[0].logpdf(pa) + post[1].logpdf(pb)
     if lift_prior is not None:
-        log_f += norm.logpdf(np.log(pb / pa), lift_prior.mean_log_lift, lift_prior.std_log_lift)
+        log_f += norm.logpdf(np.log(pb / pa),
+                             lift_prior.mean_log_lift, lift_prior.std_log_lift)
     f = np.exp(log_f - log_f.max())
     return float((f * (pb > pa)).sum() / f.sum())
 
@@ -462,9 +463,11 @@ def test_multi_variant_uses_product_of_lift_priors():
     )
 
     rng = np.random.default_rng(7)
-    s = np.array([rng.beta(1 + c, 1 + v - c, 400_000) for v, c in zip(visitors, conversions)])
+    s = np.array([rng.beta(1 + c, 1 + v - c, 400_000)
+                 for v, c in zip(visitors, conversions)])
     log_w = sum(
-        norm.logpdf(np.log(s[i] / s[0]), lift_prior.mean_log_lift, lift_prior.std_log_lift)
+        norm.logpdf(np.log(s[i] / s[0]), lift_prior.mean_log_lift,
+                    lift_prior.std_log_lift)
         for i in (1, 2)
     )
     w = np.exp(log_w - log_w.max())
@@ -486,9 +489,11 @@ def test_effective_sample_size_drops_under_skeptical_prior():
 
 def test_prior_prob_positive_lift():
     assert prior_prob_positive_lift(None) == 0.5
-    assert prior_prob_positive_lift(get_lift_prior(0.0, "skeptical")) == pytest.approx(0.5)
+    assert prior_prob_positive_lift(get_lift_prior(
+        0.0, "skeptical")) == pytest.approx(0.5)
     # +10% / skeptical: Phi(log(1.1) / 0.1) ~= 0.83 -- a strong directional belief.
-    assert prior_prob_positive_lift(get_lift_prior(10.0, "skeptical")) == pytest.approx(0.8295, abs=1e-3)
+    assert prior_prob_positive_lift(get_lift_prior(
+        10.0, "skeptical")) == pytest.approx(0.8295, abs=1e-3)
     assert prior_prob_positive_lift(get_lift_prior(-10.0, "moderate")) < 0.5
 
 
@@ -749,7 +754,8 @@ def test_aov_uncertainty_widens_risk_at_equal_aov():
     noisy = _monetary(BayesianEngine(seed=31), visitors, conversions, aovs,
                       aov_cv=1.0, n_simulations=400_000)[0]
     assert noisy["expected_risk"] > 2.0 * exact["expected_risk"]
-    assert abs(noisy["prob_revenue_better"] - 0.5) < abs(exact["prob_revenue_better"] - 0.5) - 0.05
+    assert abs(noisy["prob_revenue_better"] - \
+               0.5) < abs(exact["prob_revenue_better"] - 0.5) - 0.05
     assert noisy["prob_beat_control"] == exact["prob_beat_control"]
 
 

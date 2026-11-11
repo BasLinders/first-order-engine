@@ -236,7 +236,8 @@ def test_binomial_experiments_rejects_more_than_one():
             date_range=RANGE,
             param_key="k",
             match_strategy=MatchStrategy.EXACT,
-            experiments=[make_experiment(exp_id="exp1"), make_experiment(exp_id="exp2", prefix="EXP2")],
+            experiments=[make_experiment(exp_id="exp1"), make_experiment(
+                exp_id="exp2", prefix="EXP2")],
         )
 
 
@@ -301,7 +302,8 @@ def test_experiment_shared_scan_flags_reflect_cost_warning_kpis_and_filters():
         kpi_login=True,
         kpi_ideal=True,
     )
-    need_page_location, need_payment_type = ex.experiment_shared_scan_flags(binomial, None)
+    need_page_location, need_payment_type = ex.experiment_shared_scan_flags(
+        binomial, None)
     assert need_page_location is True
     assert need_payment_type is True
 
@@ -314,7 +316,8 @@ def test_experiment_shared_scan_flags_reflect_cost_warning_kpis_and_filters():
         kpi_login=False,
         kpi_ideal=False,
     )
-    need_page_location, need_payment_type = ex.experiment_shared_scan_flags(plain_binomial, None)
+    need_page_location, need_payment_type = ex.experiment_shared_scan_flags(
+        plain_binomial, None)
     assert need_page_location is False
     assert need_payment_type is False
 
@@ -340,7 +343,8 @@ def test_shared_scan_single_output_wrapper_is_valid_sql_skeleton():
         match_strategy=MatchStrategy.EXACT,
         experiments=[make_experiment()],
     )
-    shared_select = ex.build_shared_scan_select(CONN.project, CONN.dataset, "2026-01-01", "2026-01-31", "k")
+    shared_select = ex.build_shared_scan_select(
+        CONN.project, CONN.dataset, "2026-01-01", "2026-01-31", "k")
     cte_chain = ex.build_binomial_from_shared_scan(binomial)
     sql = ex.build_experiment_single_output_sql(shared_select, cte_chain)
     assert sql.strip().startswith("--")
@@ -420,7 +424,8 @@ def test_interaction_rejects_experiment_without_a_and_b_labels():
     mislabeled = ExperimentDefinition(
         experiment_id="exp1",
         prefix="EXP1",
-        variants=[VariantPair(label="Control", string="EXP1_control"), VariantPair(label="Treatment", string="EXP1_variant")],
+        variants=[VariantPair(label="Control", string="EXP1_control"), VariantPair(
+            label="Treatment", string="EXP1_variant")],
     )
     with pytest.raises(ValidationError, match="labeled 'A' and 'B'"):
         InteractionExtractionParams(
@@ -431,7 +436,8 @@ def test_interaction_rejects_experiment_without_a_and_b_labels():
 def test_build_interaction_two_experiments_builds_concat_classification():
     exp1 = make_experiment(exp_id="exp1", a="EXP1_A", b="EXP1_B")
     exp2 = make_experiment(exp_id="exp2", a="EXP2_A", b="EXP2_B")
-    params = InteractionExtractionParams(connection=CONN, date_range=RANGE, param_key="k", experiments=[exp1, exp2])
+    params = InteractionExtractionParams(
+        connection=CONN, date_range=RANGE, param_key="k", experiments=[exp1, exp2])
     sql = ex.build_interaction(params)
     assert "CONCAT(" in sql
     assert "EXP1_A" in sql and "EXP2_A" in sql
@@ -443,13 +449,15 @@ def test_build_interaction_two_experiments_builds_concat_classification():
 
 
 def test_autodetect_variants_query_scopes_to_param_key_and_prefix():
-    sql = ex.build_autodetect_variants_query(CONN.project, CONN.dataset, "2026-01-01", "2026-01-02", "k", "EXP1")
+    sql = ex.build_autodetect_variants_query(
+        CONN.project, CONN.dataset, "2026-01-01", "2026-01-02", "k", "EXP1")
     assert "params.key = 'k'" in sql
     assert "LIKE '%EXP1%'" in sql
 
 
 def test_autodetect_event_names_query_orders_by_frequency():
-    sql = ex.build_autodetect_event_names_query(CONN.project, CONN.dataset, "2026-01-01", "2026-01-02", limit=50)
+    sql = ex.build_autodetect_event_names_query(
+        CONN.project, CONN.dataset, "2026-01-01", "2026-01-02", limit=50)
     assert "ORDER BY event_count DESC" in sql
     assert "LIMIT 50" in sql
 
@@ -468,7 +476,8 @@ def test_build_event_log_default_shape_is_user_and_event_name():
 
 
 def test_build_event_log_restricts_to_requested_event_names():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, event_names=["page_view", "purchase"])
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, event_names=["page_view", "purchase"])
     sql = event_log_sql.build_event_log(params)
     # event_filter is applied against the raw activity_col ('event_name'),
     # not the 'activity' alias assigned in the outer SELECT.
@@ -477,7 +486,8 @@ def test_build_event_log_restricts_to_requested_event_names():
 
 def test_build_event_log_adds_attribute_columns():
     params = EventLogExtractionParams(
-        connection=CONN, date_range=RANGE, attribute_params=["page_location", "page_title"]
+        connection=CONN, date_range=RANGE, attribute_params=[
+            "page_location", "page_title"]
     )
     sql = event_log_sql.build_event_log(params)
     assert "AS page_location" in sql
@@ -486,7 +496,8 @@ def test_build_event_log_adds_attribute_columns():
 
 def test_build_event_log_dedupes_exact_duplicate_attribute_key():
     params = EventLogExtractionParams(
-        connection=CONN, date_range=RANGE, attribute_params=["page_location", "page_location"]
+        connection=CONN, date_range=RANGE, attribute_params=[
+            "page_location", "page_location"]
     )
     sql = event_log_sql.build_event_log(params)
     assert sql.count("AS page_location") == 1
@@ -497,7 +508,8 @@ def test_build_event_log_rejects_colliding_distinct_attribute_keys():
     # alias -- silently keeping only the first would drop a column the
     # caller explicitly asked for with no indication why.
     params = EventLogExtractionParams(
-        connection=CONN, date_range=RANGE, attribute_params=["page.location", "page_location"]
+        connection=CONN, date_range=RANGE, attribute_params=[
+            "page.location", "page_location"]
     )
     with pytest.raises(ValueError, match="disambiguate"):
         event_log_sql.build_event_log(params)
@@ -538,7 +550,8 @@ def test_build_event_log_custom_case_and_activity_columns():
 
 
 def test_build_event_log_rejects_unsafe_case_id_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, case_id_col="user_id; DROP TABLE x")
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, case_id_col="user_id; DROP TABLE x")
     with pytest.raises(ValueError):
         event_log_sql.build_event_log(params)
 
@@ -550,7 +563,8 @@ def test_build_event_log_always_emits_user_id_by_default():
 
 
 def test_build_event_log_include_user_id_false_omits_the_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_user_id=False)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_user_id=False)
     sql = event_log_sql.build_event_log(params)
     assert "AS user_id" not in sql
 
@@ -590,18 +604,21 @@ def test_build_event_log_session_id_param_still_used_in_case_filter_cte():
     assert "filtered_cases AS" in sql
     # the filtered_cases CTE must key off the same session-level expression,
     # not silently fall back to a flat user_pseudo_id reference.
-    assert "WHERE ep.key = 'ga_session_id'" in sql.split("filtered_cases AS")[1].split("base AS")[0]
+    assert "WHERE ep.key = 'ga_session_id'" in sql.split("filtered_cases AS")[
+                                                         1].split("base AS")[0]
 
 
 def test_build_event_log_include_purchase_revenue_adds_typed_revenue_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_purchase_revenue=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_purchase_revenue=True)
     sql = event_log_sql.build_event_log(params)
     assert "ecommerce.purchase_revenue AS revenue" in sql
 
 
 def test_build_event_log_numeric_attribute_params_coalesces_typed_value_slots():
     params = EventLogExtractionParams(
-        connection=CONN, date_range=RANGE, numeric_attribute_params=["value", "engagement_time_msec"]
+        connection=CONN, date_range=RANGE, numeric_attribute_params=[
+            "value", "engagement_time_msec"]
     )
     sql = event_log_sql.build_event_log(params)
     assert "COALESCE(ep.value.double_value, ep.value.float_value, CAST(ep.value.int_value AS FLOAT64))" in sql
@@ -646,7 +663,8 @@ def test_build_event_log_purchase_revenue_requires_purchase_in_restricted_event_
 
 
 def test_build_event_log_purchase_revenue_allows_unrestricted_event_names():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_purchase_revenue=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_purchase_revenue=True)
     sql = event_log_sql.build_event_log(params)
     assert "ecommerce.purchase_revenue AS revenue" in sql
 
@@ -663,19 +681,22 @@ def test_build_event_log_purchase_revenue_allows_purchase_in_event_names():
 
 
 def test_build_event_log_include_device_adds_device_category_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_device=True)
     sql = event_log_sql.build_event_log(params)
     assert "device.category AS device_category" in sql
 
 
 def test_build_event_log_include_device_false_omits_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=False)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_device=False)
     sql = event_log_sql.build_event_log(params)
     assert "device_category" not in sql
 
 
 def test_build_event_log_include_traffic_source_prefers_session_last_click_with_fallback():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_traffic_source=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_traffic_source=True)
     sql = event_log_sql.build_event_log(params)
     assert (
         "COALESCE(session_traffic_source_last_click.manual_campaign.source, traffic_source.source) "
@@ -688,7 +709,8 @@ def test_build_event_log_include_traffic_source_prefers_session_last_click_with_
 
 
 def test_build_event_log_include_traffic_source_false_omits_columns():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_traffic_source=False)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_traffic_source=False)
     sql = event_log_sql.build_event_log(params)
     assert "traffic_source" not in sql
     assert "traffic_medium" not in sql
@@ -697,13 +719,15 @@ def test_build_event_log_include_traffic_source_false_omits_columns():
 def test_build_event_log_include_item_category_matches_prox_static_sql_expression():
     # PRoX's own static SQL template (main.py, CSV-export users) uses this exact expression --
     # matching it keeps both of PRoX's GA4 data paths consistent.
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_item_category=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_item_category=True)
     sql = event_log_sql.build_event_log(params)
     assert "(SELECT item_category FROM UNNEST(items) LIMIT 1) AS category" in sql
 
 
 def test_build_event_log_include_item_category_false_omits_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_item_category=False)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_item_category=False)
     sql = event_log_sql.build_event_log(params)
     assert "item_category" not in sql
 
@@ -711,13 +735,15 @@ def test_build_event_log_include_item_category_false_omits_column():
 def test_build_event_log_include_geo_adds_geo_country_column():
     # geo.country is populated by GA4's own IP geolocation -- no ecommerce/GTM implementation
     # required, unlike item_category, so it's a reliable segment dimension when category isn't.
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_geo=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_geo=True)
     sql = event_log_sql.build_event_log(params)
     assert "geo.country AS geo_country" in sql
 
 
 def test_build_event_log_include_geo_false_omits_column():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_geo=False)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_geo=False)
     sql = event_log_sql.build_event_log(params)
     assert "geo_country" not in sql
 
@@ -748,7 +774,8 @@ def test_build_event_log_segment_flags_coexist_with_revenue_and_attributes():
 
 
 def test_build_event_log_preview_caps_rows_and_narrows_date_window():
-    params = EventLogExtractionParams(connection=CONN, date_range=RANGE, include_device=True)
+    params = EventLogExtractionParams(
+        connection=CONN, date_range=RANGE, include_device=True)
     sql = event_log_sql.build_event_log_preview(params, sample_rows=20, sample_days=1)
     assert "LIMIT 20" in sql
     assert "device.category AS device_category" in sql
@@ -788,7 +815,8 @@ def test_build_timeseries_default_metrics_shape_matches_forecasting_engine_contr
     params = TimeSeriesExtractionParams(
         connection=CONN,
         date_range=RANGE,
-        metrics=[TimeSeriesMetric.VISITORS, TimeSeriesMetric.CONVERSIONS, TimeSeriesMetric.REVENUE],
+        metrics=[TimeSeriesMetric.VISITORS,
+            TimeSeriesMetric.CONVERSIONS, TimeSeriesMetric.REVENUE],
     )
     sql = ts_sql.build_timeseries(params)
     assert "AS date" in sql

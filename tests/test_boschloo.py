@@ -65,7 +65,8 @@ def test_opposite_degenerate_arms_are_significant(engine):
 def test_at_least_as_powerful_as_fisher(engine):
     """Boschloo's p-value is never larger than Fisher's (one-sided)."""
     for ctrl, chal in [(3, 10), (1, 6), (8, 15), (0, 4)]:
-        fisher_p = fisher_exact([[chal, 120 - chal], [ctrl, 120 - ctrl]], alternative="greater")[1]
+        fisher_p = fisher_exact(
+            [[chal, 120 - chal], [ctrl, 120 - ctrl]], alternative="greater")[1]
         assert engine.exact_p_value(ctrl, 120, chal, 120, GREATER) <= fisher_p + 1e-12
 
 

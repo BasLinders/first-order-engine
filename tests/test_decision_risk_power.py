@@ -70,7 +70,8 @@ def test_power_does_not_depend_on_observed_challenger():
     for chal_conv in (500, 540, 620):
         data = ExperimentInput(visitors=[10000, 10000], conversions=[500, chal_conv])
         result = engine.run_synthesis(data)[0]
-        risks.append(Engine.assess_result_risk(data, result, mde_relative=0.10, prior=0.5))
+        risks.append(Engine.assess_result_risk(
+            data, result, mde_relative=0.10, prior=0.5))
     assert risks[0]["power"] == pytest.approx(risks[1]["power"])
     assert risks[1]["power"] == pytest.approx(risks[2]["power"])
     assert [r["metric"] for r in risks] == [
@@ -98,8 +99,10 @@ def test_assess_result_risk_uses_sidak_alpha_and_label():
 
 
 def test_assess_result_risk_rejects_foreign_result():
-    data = ExperimentInput(visitors=[1000, 1000], conversions=[50, 60], labels=["A", "B"])
-    other = ExperimentInput(visitors=[1000, 1000], conversions=[50, 60], labels=["A", "X"])
+    data = ExperimentInput(visitors=[1000, 1000], conversions=[
+                           50, 60], labels=["A", "B"])
+    other = ExperimentInput(visitors=[1000, 1000], conversions=[
+                            50, 60], labels=["A", "X"])
     result = Engine().run_synthesis(other)[0]
     with pytest.raises(ValueError, match="does not match"):
         Engine.assess_result_risk(data, result, mde_relative=0.1, prior=0.5)

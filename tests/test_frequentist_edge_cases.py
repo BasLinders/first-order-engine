@@ -221,7 +221,8 @@ def test_phi_unbiased_under_binomial_null_with_uneven_traffic(date_col):
     phis = [
         FrequentistEngine.calculate_aggregate_variance_factor(
             pd.DataFrame(
-                {"date": dates, "visitors": traffic, "conversions": rng.binomial(traffic, 0.03)}
+                {"date": dates, "visitors": traffic,
+                    "conversions": rng.binomial(traffic, 0.03)}
             ),
             date_col=date_col,
         )["phi"]
