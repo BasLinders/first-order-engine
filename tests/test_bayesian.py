@@ -9,6 +9,7 @@ from foe.bayesian.operations import (
     get_lift_prior,
     BetaPrior,
     prior_prob_positive_lift,
+    mc_margin,
 )
 from foe.core.models import ExperimentInput, BusinessCaseInput, BayesianResult
 
@@ -167,17 +168,6 @@ def test_result_fields_are_present(engine, uninformative_priors):
 
 # --- run_monetary_projection ---
 
-def _get_prob_best_overall(engine, visitors, conversions, labels):
-    """Helper to extract prob_best_overall list for monetary projection calls."""
-    results = engine.run_probability_analysis(
-        data=make_experiment(visitors, conversions, labels),
-        beta_prior=get_beta_prior(),
-        lift_prior=get_lift_prior(0.0, "uninformative"),
-    )
-    control_pbb = 1.0 - sum(r.prob_being_best for r in results)
-    return [control_pbb] + [r.prob_being_best for r in results]
-
-
 def test_monetary_positive_uplift_for_better_variant(engine, uninformative_priors):
     """
     A variant with higher CR and higher AOV should produce positive uplift
@@ -196,7 +186,6 @@ def test_monetary_positive_uplift_for_better_variant(engine, uninformative_prior
             runtime_days=30,
             projection_period=180,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -231,7 +220,6 @@ def test_monetary_three_variants_returns_two_results(engine, uninformative_prior
             runtime_days=30,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -266,7 +254,6 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
     beta_prior, lift_prior = uninformative_priors
     visitors = [1000, 1000]
     conversions = [100, 110]
-    labels = ["Control", "Challenger"]
 
     with pytest.raises(ValueError, match="variant_labels has 1 entries but visitors has 2"):
         engine.run_monetary_projection(
@@ -277,7 +264,6 @@ def test_monetary_label_mismatch_raises_value_error(engine, uninformative_priors
                 runtime_days=30,
                 projection_period=90,
             ),
-            prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
             variant_labels=["OnlyOneLabel"],
             beta_prior=beta_prior,
             lift_prior=lift_prior,
@@ -303,7 +289,6 @@ def test_monetary_risk_is_always_non_negative(engine, uninformative_priors):
             runtime_days=30,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=beta_prior,
         lift_prior=lift_prior,
@@ -337,7 +322,6 @@ def test_alpha_beta_prior_in_biz_case_influences_projection(engine):
             alpha_prior=1.0,
             beta_prior=1.0,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=BetaPrior(alpha=1.0, beta=1.0),
     )
@@ -353,7 +337,6 @@ def test_alpha_beta_prior_in_biz_case_influences_projection(engine):
             alpha_prior=500.0,
             beta_prior=500.0,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         beta_prior=BetaPrior(alpha=500.0, beta=500.0),
     )
@@ -383,42 +366,36 @@ def test_biz_case_accepted_via_experiment_input():
     assert data.biz_case.aovs["Control"] == 50.0
 
 
-def test_aov_cv_zero_approximates_constant_aov(engine, uninformative_priors):
+def test_aov_uncertainty_keeps_net_contribution_unbiased(engine, uninformative_priors):
     """
-    A very low CV should produce monetary results close to those from a
-    high-CV run, confirming the log-normal parameterisation is unbiased:
-    E[AOV] = mean_aov regardless of spread.
+    AOV draws are mean-preserving, so the net contribution E[revenue diff]
+    is the same at any aov_cv; only its spread (and with it uplift and risk
+    separately) grows.
     """
     beta_prior, lift_prior = uninformative_priors
     visitors = [5000, 5000]
     conversions = [250, 300]
     labels = ["Control", "Challenger"]
-    pbo = _get_prob_best_overall(engine, visitors, conversions, labels)
     biz_case = BusinessCaseInput(
         aovs={"Control": 50.0, "Challenger": 50.0},
         runtime_days=30,
         projection_period=180,
     )
 
-    result_low_cv = engine.run_monetary_projection(
-        visitors=visitors, conversions=conversions,
-        biz_case=biz_case, prob_best_overall=pbo,
-        variant_labels=labels,
-        beta_prior=beta_prior, lift_prior=lift_prior,
-        aov_cv=0.01,
-    )
-    result_high_cv = engine.run_monetary_projection(
-        visitors=visitors, conversions=conversions,
-        biz_case=biz_case, prob_best_overall=pbo,
-        variant_labels=labels,
-        beta_prior=beta_prior, lift_prior=lift_prior,
-        aov_cv=1.5,
-    )
+    def run(cv):
+        return engine.run_monetary_projection(
+            visitors=visitors, conversions=conversions,
+            biz_case=biz_case,
+            variant_labels=labels,
+            beta_prior=beta_prior, lift_prior=lift_prior,
+            aov_cv=cv, n_simulations=400_000,
+        )[0]
 
-    # Point estimates should converge regardless of spread (within 10%).
-    low = result_low_cv[0]["expected_uplift"]
-    high = result_high_cv[0]["expected_uplift"]
-    assert abs(low - high) / max(abs(low), 1e-6) < 0.10
+    low, high = run(0.0), run(1.5)
+    assert high["expected_total_contribution"] == pytest.approx(
+        low["expected_total_contribution"], rel=0.03
+    )
+    assert high["expected_risk"] > low["expected_risk"]
 
 
 # --- Lift prior correctness ---
@@ -546,7 +523,6 @@ def test_monetary_compares_rates_not_volumes(engine):
             runtime_days=14,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
         lift_prior=None,
     )[0]
@@ -565,8 +541,229 @@ def test_monetary_zero_aov_does_not_produce_nan(engine):
             runtime_days=14,
             projection_period=90,
         ),
-        prob_best_overall=_get_prob_best_overall(engine, visitors, conversions, labels),
         variant_labels=labels,
     )[0]
     assert r["expected_uplift"] == 0.0
     assert r["expected_risk"] == 0.0
+
+
+# --- Monetary projection: per-arm AOV ---
+
+def _monetary(engine, visitors, conversions, aovs, **kwargs):
+    labels = list(aovs)
+    return engine.run_monetary_projection(
+        visitors=visitors,
+        conversions=conversions,
+        biz_case=BusinessCaseInput(aovs=aovs, runtime_days=14, projection_period=90),
+        variant_labels=labels,
+        **kwargs,
+    )
+
+
+def test_monetary_equal_aov_matches_rate_formula(engine):
+    """
+    With equal, exactly known AOVs (aov_cv=0) the revenue difference is
+    AOV * (b - a) * traffic, so the projection must equal
+    period * traffic * AOV * E[(b - a)+] from run_probability_analysis,
+    within MC error.
+    """
+    visitors, conversions = [9000, 9100], [270, 300]
+    prior = get_lift_prior(0.0, "moderate")
+    r = _monetary(engine, visitors, conversions, {"Control": 50.0, "Challenger": 50.0},
+                  lift_prior=prior, aov_cv=0.0, n_simulations=400_000)[0]
+    p = BayesianEngine(seed=7).run_probability_analysis(
+        make_experiment(visitors, conversions), lift_prior=prior, n_samples=400_000
+    )[0]
+    scale = 90 * (np.mean(visitors) / 14) * 50.0
+    assert r["expected_uplift"] == pytest.approx(scale * p.expected_uplift, rel=0.03)
+    assert r["expected_risk"] == pytest.approx(scale * p.expected_loss, rel=0.05)
+    assert r["prob_revenue_better"] == pytest.approx(r["prob_beat_control"], abs=1e-12)
+
+
+@pytest.mark.parametrize("variant_aov, sign", [(60.0, 1), (40.0, -1)])
+def test_monetary_counts_aov_difference_at_equal_rates(engine, variant_aov, sign):
+    """
+    Same conversion rate, challenger AOV 20% higher (lower): the projection
+    must show a revenue gain (loss) of about period * traffic * cr * dAOV,
+    while the rate-based prob_beat_control stays near 0.5.
+    """
+    visitors, conversions = [10000, 10000], [300, 300]
+    r = _monetary(engine, visitors, conversions,
+                  {"Control": 50.0, "Challenger": variant_aov}, lift_prior=None)[0]
+
+    cr = 301 / 10002  # posterior mean under Beta(1, 1)
+    expected_net = 90 * (10000 / 14) * cr * (variant_aov - 50.0)
+    assert r["expected_total_contribution"] == pytest.approx(expected_net, rel=0.05)
+    assert abs(r["prob_beat_control"] - 0.5) < 0.02
+    if sign > 0:
+        assert r["prob_revenue_better"] > 0.95
+        assert r["expected_uplift"] > 0 and r["expected_uplift"] > 20 * r["expected_risk"]
+    else:
+        assert r["prob_revenue_better"] < 0.05
+        assert r["expected_risk"] > 0 and r["expected_risk"] > 20 * r["expected_uplift"]
+
+
+# --- Lift prior width names ---
+
+@pytest.mark.parametrize("width, alias, std", [
+    ("narrow", "skeptical", 0.10),
+    ("medium", "moderate", 0.25),
+    ("wide", "uninformative", 1.00),
+])
+@pytest.mark.parametrize("lift", [0.0, 7.5])
+def test_lift_prior_width_names_and_aliases(width, alias, std, lift):
+    new, old = get_lift_prior(lift, width), get_lift_prior(lift, alias)
+    assert new == old
+    assert new.std_log_lift == std
+    assert new.mean_log_lift == pytest.approx(np.log1p(lift / 100))
+
+
+def test_lift_prior_unknown_width_raises():
+    with pytest.raises(ValueError, match="narrow.*skeptical"):
+        get_lift_prior(0.0, "tight")
+
+
+# --- BusinessCaseInput Beta prior ---
+
+def _biz_prior_run(alpha, beta, **kwargs):
+    return BayesianEngine(seed=11).run_monetary_projection(
+        visitors=[1000, 1000],
+        conversions=[100, 150],
+        biz_case=BusinessCaseInput(
+            aovs={"Control": 50.0, "Challenger": 50.0},
+            runtime_days=30, projection_period=90,
+            alpha_prior=alpha, beta_prior=beta,
+        ),
+        variant_labels=["Control", "Challenger"],
+        **kwargs,
+    )[0]
+
+
+def test_biz_case_beta_prior_used_when_no_beta_prior_passed():
+    """
+    Without a beta_prior argument the projection uses Beta(alpha_prior,
+    beta_prior) from the business case, so a strong prior shrinks the lift.
+    """
+    flat = _biz_prior_run(1.0, 1.0)
+    strong = _biz_prior_run(500.0, 500.0)
+    assert strong["expected_uplift"] < 0.8 * flat["expected_uplift"]
+    # Same as passing the prior explicitly (same seed, same draws).
+    explicit = _biz_prior_run(1.0, 1.0, beta_prior=BetaPrior(500.0, 500.0))
+    assert strong["expected_uplift"] == explicit["expected_uplift"]
+
+
+def test_explicit_beta_prior_overrides_biz_case():
+    a = _biz_prior_run(500.0, 500.0, beta_prior=BetaPrior(1.0, 1.0))
+    b = _biz_prior_run(1.0, 1.0)
+    assert a["expected_uplift"] == b["expected_uplift"]
+
+
+# --- Monte Carlo margin ---
+
+def test_mc_margin_formula_and_validation():
+    assert mc_margin(0.5, 10_000) == pytest.approx(1.96 * 0.005)
+    assert mc_margin(0.9, 2_500, z=1.0) == pytest.approx(np.sqrt(0.09 / 2_500))
+    assert mc_margin(0.0, 100) == 0.0
+    for bad in [dict(p=1.2, ess=10), dict(p=0.5, ess=0), dict(p=0.5, ess=10, z=0)]:
+        with pytest.raises(ValueError):
+            mc_margin(**bad)
+
+
+def test_mc_margin_matches_seed_to_seed_spread():
+    """
+    Under a skeptical lift prior (ESS well below n_samples), the spread of
+    prob_beat_control across seeds should match mc_margin(p, ess) / z.
+    """
+    data = make_experiment([3000, 3000], [90, 110])
+    prior = get_lift_prior(0.0, "skeptical")
+    runs = [
+        BayesianEngine(seed=s).run_probability_analysis(
+            data, lift_prior=prior, n_samples=4_000
+        )[0]
+        for s in range(200)
+    ]
+    probs = np.array([r.prob_beat_control for r in runs])
+    ess = np.mean([r.effective_sample_size for r in runs])
+    assert ess < 0.8 * 4_000
+    predicted_sd = mc_margin(probs.mean(), ess, z=1.0)
+    assert probs.std(ddof=1) == pytest.approx(predicted_sd, rel=0.25)
+
+
+# --- prob_best_overall computed inside run_monetary_projection ---
+
+def test_monetary_prob_best_overall_computed_from_own_draws():
+    """
+    prob_best_overall comes from the projection's own weighted draws: it
+    matches run_probability_analysis within MC error, and a passed value is
+    ignored with a DeprecationWarning.
+    """
+    visitors, conversions = [15000, 15000, 15000], [450, 495, 480]
+    labels = ["Control", "B", "C"]
+    prior = get_lift_prior(0.0, "skeptical")
+    biz = BusinessCaseInput(aovs=dict.fromkeys(labels, 50.0), runtime_days=14)
+
+    expected = BayesianEngine(seed=21).run_probability_analysis(
+        make_experiment(visitors, conversions, labels),
+        lift_prior=prior, n_samples=200_000,
+    )
+    with pytest.warns(DeprecationWarning, match="prob_best_overall"):
+        got = BayesianEngine(seed=22).run_monetary_projection(
+            visitors, conversions, biz, [0.9, 0.05, 0.05], labels,
+            lift_prior=prior, n_simulations=200_000,
+        )
+    for e, g in zip(expected, got):
+        assert g["prob_best_overall"] == pytest.approx(e.prob_being_best, abs=0.01)
+        assert g["prob_best_overall"] != 0.05
+
+
+def test_monetary_without_prob_best_overall_does_not_warn(recwarn):
+    BayesianEngine(seed=1).run_monetary_projection(
+        visitors=[1000, 1000], conversions=[100, 110],
+        biz_case=BusinessCaseInput(aovs={"A": 50.0, "B": 50.0}, runtime_days=14),
+        variant_labels=["A", "B"],
+    )
+    assert not [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+
+
+def test_monetary_requires_variant_labels():
+    with pytest.raises(ValueError, match="variant_labels is required"):
+        BayesianEngine(seed=1).run_monetary_projection(
+            visitors=[1000, 1000], conversions=[100, 110],
+            biz_case=BusinessCaseInput(aovs={"A": 50.0, "B": 50.0}, runtime_days=14),
+        )
+
+
+# --- Monetary projection: uncertainty in each arm's mean AOV ---
+
+def test_aov_uncertainty_widens_risk_at_equal_aov():
+    """
+    Each arm's mean AOV is uncertain (sd = aov_cv * AOV / sqrt(orders)), so
+    with equal AOVs a larger aov_cv must raise the expected risk and pull
+    prob_revenue_better toward 0.5, while prob_beat_control (rate-based)
+    does not move. A shared or no AOV noise leaves all three unchanged.
+    """
+    visitors, conversions = [9000, 9100], [270, 300]
+    aovs = {"Control": 50.0, "Challenger": 50.0}
+    exact = _monetary(BayesianEngine(seed=31), visitors, conversions, aovs,
+                      aov_cv=0.0, n_simulations=400_000)[0]
+    noisy = _monetary(BayesianEngine(seed=31), visitors, conversions, aovs,
+                      aov_cv=1.0, n_simulations=400_000)[0]
+    assert noisy["expected_risk"] > 2.0 * exact["expected_risk"]
+    assert abs(noisy["prob_revenue_better"] - 0.5) < abs(exact["prob_revenue_better"] - 0.5) - 0.05
+    assert noisy["prob_beat_control"] == exact["prob_beat_control"]
+
+
+def test_aov_uncertainty_shrinks_with_more_orders():
+    """
+    The same AOV gap with 100x the orders (and visitors) is far more certain:
+    sd of each mean AOV falls by 10x, so prob_revenue_better moves toward 1.
+    With 400 orders, rate uncertainty alone gives ~0.73; the AOV uncertainty
+    (cv 1.5 / sqrt(400) = 7.5% per arm) brings it to ~0.63.
+    """
+    aovs = {"Control": 50.0, "Challenger": 52.0}
+    few = _monetary(BayesianEngine(seed=32), [2000, 2000], [400, 400], aovs,
+                    aov_cv=1.5, n_simulations=200_000)[0]
+    many = _monetary(BayesianEngine(seed=32), [200_000, 200_000], [40_000, 40_000], aovs,
+                     aov_cv=1.5, n_simulations=200_000)[0]
+    assert 0.58 < few["prob_revenue_better"] < 0.68
+    assert many["prob_revenue_better"] > 0.95

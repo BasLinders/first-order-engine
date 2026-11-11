@@ -134,7 +134,9 @@ for r in freq_results:
 bayes_results = BayesianEngine().run_probability_analysis(
     data=data,
     beta_prior=get_beta_prior(),
-    lift_prior=get_lift_prior(0.0, "uninformative"),
+    # Width "narrow" | "medium" | "wide"; the old names "skeptical" |
+    # "moderate" | "uninformative" still work as aliases.
+    lift_prior=get_lift_prior(0.0, "wide"),
 )
 for r in bayes_results:
     print(f"{r.variant_label}: {r.prob_being_best:.1%} probability of being best")

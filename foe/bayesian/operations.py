@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Any, Literal, Optional
 
@@ -23,10 +24,23 @@ class LiftPrior:
 
 
 _LIFT_PRIOR_STD: Dict[str, float] = {
-    "skeptical":     0.10,
-    "moderate":      0.25,
-    "uninformative": 1.00,
+    "narrow": 0.10,
+    "medium": 0.25,
+    "wide":   1.00,
 }
+
+# Original names, kept as aliases so existing callers keep working. They
+# describe the prior's width only when expected_lift_pct is 0: a narrow prior
+# around a non-zero lift is a confident directional belief, not skepticism.
+_LIFT_PRIOR_WIDTH_ALIASES: Dict[str, str] = {
+    "skeptical":     "narrow",
+    "moderate":      "medium",
+    "uninformative": "wide",
+}
+
+LiftPriorWidth = Literal[
+    "narrow", "medium", "wide", "skeptical", "moderate", "uninformative"
+]
 
 # Default projection period used when no BusinessCaseInput is available.
 _DEFAULT_PROJECTION_DAYS: int = 30
@@ -42,30 +56,38 @@ def get_beta_prior() -> BetaPrior:
 
 def get_lift_prior(
     expected_lift_pct: float,
-    skepticism: Literal["skeptical", "moderate", "uninformative"],
+    skepticism: LiftPriorWidth,
 ) -> LiftPrior:
     """
-    Builds a log-normal lift prior from a directional expectation and a
-    skepticism level controlling how strongly large lifts are penalised.
+    Builds a normal prior on log-lift, centred at log(1 + expected_lift_pct/100),
+    with a width that controls how strongly lifts far from that centre are
+    penalised.
 
     Args:
         expected_lift_pct: Expected relative lift as a percentage (e.g. 5.0
                            for +5%). Use 0.0 for no directional expectation.
                            Must be greater than -100.
-        skepticism:        How tightly the prior constrains implausible lifts.
-                           'skeptical' applies strong pressure; 'uninformative'
-                           applies almost none.
+        skepticism:        Prior width on the log-lift scale: 'narrow'
+                           (sigma 0.10), 'medium' (0.25) or 'wide' (1.00).
+                           The original names 'skeptical', 'moderate' and
+                           'uninformative' are accepted as aliases.
+
+    Only a prior centred at 0 is skeptical. A narrow prior around a non-zero
+    expected lift is a confident belief in that direction (+20% / narrow
+    alone gives P(lift > 0) ~ 0.97); see prior_prob_positive_lift.
     """
-    if skepticism not in _LIFT_PRIOR_STD:
+    width = _LIFT_PRIOR_WIDTH_ALIASES.get(skepticism, skepticism)
+    if width not in _LIFT_PRIOR_STD:
         raise ValueError(
-            f"skepticism must be one of {list(_LIFT_PRIOR_STD)}, got {skepticism!r}."
+            f"skepticism must be one of {list(_LIFT_PRIOR_STD)} (or the aliases "
+            f"{list(_LIFT_PRIOR_WIDTH_ALIASES)}), got {skepticism!r}."
         )
     if expected_lift_pct <= -100:
         raise ValueError("expected_lift_pct must be greater than -100.")
 
     return LiftPrior(
         mean_log_lift=np.log1p(expected_lift_pct / 100.0),
-        std_log_lift=_LIFT_PRIOR_STD[skepticism],
+        std_log_lift=_LIFT_PRIOR_STD[width],
     )
 
 
@@ -76,7 +98,7 @@ def prior_prob_positive_lift(lift_prior: Optional[LiftPrior]) -> float:
     0.5 means the prior is neutral about direction. Anything else means the
     prior by itself pushes prob_beat_control toward one side. A non-zero
     expected lift combined with a narrow ('skeptical') prior is a strong
-    directional belief: +10% / skeptical gives ~0.83 here. Callers should
+    directional belief: +10% / narrow gives ~0.83 here. Callers should
     surface this value so the prior's pull on the decision is visible.
 
     This is the lift-prior component only; the flat Beta(1, 1) base prior is
@@ -85,6 +107,26 @@ def prior_prob_positive_lift(lift_prior: Optional[LiftPrior]) -> float:
     if lift_prior is None:
         return 0.5
     return float(norm.cdf(lift_prior.mean_log_lift / lift_prior.std_log_lift))
+
+
+def mc_margin(p: float, ess: float, z: float = 1.96) -> float:
+    """
+    Monte Carlo margin of error for a probability estimated from importance-
+    weighted draws: z * sqrt(p * (1 - p) / ess).
+
+    Pass a result's probability (e.g. prob_beat_control) and its
+    effective_sample_size. With the default z = 1.96 this is the half-width
+    of an approximate 95% interval for the Monte Carlo error alone; it says
+    nothing about uncertainty from the data, which the probability itself
+    already expresses.
+    """
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"p must be in [0, 1], got {p!r}.")
+    if ess <= 0:
+        raise ValueError(f"ess must be positive, got {ess!r}.")
+    if z <= 0:
+        raise ValueError(f"z must be positive, got {z!r}.")
+    return float(z * np.sqrt(p * (1.0 - p) / ess))
 
 
 class BayesianEngine:
@@ -162,34 +204,11 @@ class BayesianEngine:
         """
         return float(1.0 / np.sum(weights ** 2))
 
-    @staticmethod
-    def _weighted_mean_masked(
-        values: np.ndarray,
-        weights: np.ndarray,
-        mask: np.ndarray,
-    ) -> float:
-        """
-        Computes a weighted mean over the True positions of mask.
-
-        Normalises the masked weight vector before averaging, so the result
-        is correct even when the prior concentrates all weight on samples
-        that sit outside the mask (which would make weights * mask sum to
-        zero and cause np.average to raise ZeroDivisionError).
-
-        Returns 0.0 if no samples pass the mask or the masked weight sum
-        is effectively zero.
-        """
-        masked_weights = weights * mask
-        weight_sum = masked_weights.sum()
-        if weight_sum <= 0 or not mask.any():
-            return 0.0
-        normalised = masked_weights / weight_sum
-        return float(np.dot(values, normalised))
-
     def _sample_aov(self, mean_aov: float, cv: float, n_samples: int) -> np.ndarray:
         """
-        Draws AOV samples from a log-normal distribution parameterised so that
-        E[AOV] = mean_aov exactly — variance is added without any bias.
+        Draws AOV samples from a log-normal distribution with mean mean_aov
+        and coefficient of variation cv (sd = cv * mean_aov), parameterised so
+        that E[AOV] = mean_aov exactly — variance is added without any bias.
         A non-positive mean_aov yields zeros instead of log(0) = -inf.
         """
         if mean_aov <= 0:
@@ -373,8 +392,8 @@ class BayesianEngine:
         visitors: List[int],
         conversions: List[int],
         biz_case: BusinessCaseInput,
-        prob_best_overall: List[float],
-        variant_labels: List[str],
+        prob_best_overall: Optional[List[float]] = None,
+        variant_labels: Optional[List[str]] = None,
         beta_prior: Optional[BetaPrior] = None,
         lift_prior: Optional[LiftPrior] = None,
         aov_cv: float = 0.5,
@@ -390,8 +409,46 @@ class BayesianEngine:
         daily traffic per arm (mean visitors per arm / runtime_days). Comparing
         raw conversion volumes would let an uneven traffic split decide which
         arm is "better".
+
+        Each draw's daily revenue difference is
+        (cr_variant * aov_variant - cr_control * aov_control) * traffic, so an
+        AOV difference counts even at equal conversion rates.
+
+        aov_variant and aov_control are draws of each arm's *mean* AOV: log-
+        normal with mean biz_case.aovs[label] and sd aov_cv * AOV / sqrt(orders),
+        where aov_cv is the order-to-order coefficient of variation of order
+        values and orders is approximated by the arm's conversions. Pass the
+        observed CV when it is known; aov_cv=0 treats the AOVs as exact.
+        expected_uplift / expected_risk are the projection period times the
+        weighted mean of its positive / negative part. prob_beat_control stays
+        rate-based (it matches run_probability_analysis); prob_revenue_better
+        is P(revenue difference > 0).
+
+        beta_prior defaults to Beta(biz_case.alpha_prior, biz_case.beta_prior);
+        an explicit beta_prior takes precedence.
+
+        prob_best_overall in the results is computed from this projection's
+        own weighted draws (rate-based, like run_probability_analysis), so it
+        is consistent with the other numbers in the same result. The
+        prob_best_overall argument is deprecated and ignored.
+
+        variant_labels is required; it defaults to None only so that the
+        deprecated prob_best_overall before it can be optional.
         """
-        beta_prior = beta_prior or get_beta_prior()
+        if prob_best_overall is not None:
+            warnings.warn(
+                "run_monetary_projection(prob_best_overall=...) is deprecated and "
+                "ignored: prob_best_overall is now computed from the projection's "
+                "own draws.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if variant_labels is None:
+            raise ValueError("variant_labels is required.")
+
+        beta_prior = beta_prior or BetaPrior(
+            alpha=biz_case.alpha_prior, beta=biz_case.beta_prior
+        )
 
         num_variants = len(visitors)
 
@@ -405,43 +462,50 @@ class BayesianEngine:
         samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
         weights = self._compute_joint_lift_weights(samples, lift_prior)
         ess = self._effective_sample_size(weights)
+        prob_best = np.bincount(
+            np.argmax(samples, axis=0), weights=weights, minlength=num_variants
+        )
 
         daily_visitors_per_arm = float(np.mean(visitors)) / biz_case.runtime_days
 
+        # Each arm's mean AOV is an estimate from its own orders, so it is
+        # uncertain: sd = aov_cv * AOV / sqrt(orders), independent per arm,
+        # with conversions standing in for orders. This is the same model as
+        # ContinuousMetricEngine.estimate_monetary_impact_per_variant
+        # (se = std / sqrt(n_orders)) with std = aov_cv * AOV. Draws are made
+        # once per arm, so every challenger is compared to the same control.
+        aov_draws = [
+            self._sample_aov(
+                biz_case.aovs.get(label, 0.0),
+                aov_cv / np.sqrt(max(conversions[k], 1)),
+                n_simulations,
+            )
+            for k, label in enumerate(variant_labels)
+        ]
+
         control_cr = samples[0]
-        control_label = variant_labels[0]
-        control_aov = biz_case.aovs.get(control_label, 0.0)
+        control_aov = aov_draws[0]
 
         results = []
         for i in range(1, num_variants):
             variant_label = variant_labels[i]
             variant_cr = samples[i]
-            variant_aov = biz_case.aovs.get(variant_label, 0.0)
+            variant_aov = aov_draws[i]
 
-            sampled_variant_aov = self._sample_aov(variant_aov, aov_cv, n_simulations)
-            sampled_control_aov = self._sample_aov(control_aov, aov_cv, n_simulations)
-
-            # Daily conversion difference at equal traffic per arm.
-            diff = (variant_cr - control_cr) * daily_visitors_per_arm
-            positive_mask = diff > 0
-            negative_mask = diff < 0
-
-            prob_beat_control = float(np.average(positive_mask, weights=weights))
-            prob_control_better = float(np.average(negative_mask, weights=weights))
-
-            expected_daily_gain = self._weighted_mean_masked(
-                values=diff * sampled_variant_aov,
-                weights=weights,
-                mask=positive_mask,
-            )
-            expected_daily_loss = self._weighted_mean_masked(
-                values=np.abs(diff) * sampled_control_aov,
-                weights=weights,
-                mask=negative_mask,
+            # Daily revenue difference at equal traffic per arm, each arm
+            # valued at its own AOV.
+            rev_diff = (
+                (variant_cr * variant_aov - control_cr * control_aov)
+                * daily_visitors_per_arm
             )
 
-            uplift = expected_daily_gain * biz_case.projection_period * prob_beat_control
-            risk = expected_daily_loss * biz_case.projection_period * prob_control_better
+            # Rate-based, so it matches run_probability_analysis.
+            prob_beat_control = float(np.average(variant_cr > control_cr, weights=weights))
+            prob_revenue_better = float(np.average(rev_diff > 0, weights=weights))
+
+            period = biz_case.projection_period
+            uplift = period * float(np.average(np.maximum(rev_diff, 0.0), weights=weights))
+            risk = period * float(np.average(np.maximum(-rev_diff, 0.0), weights=weights))
 
             conclusion = self.generate_bayesian_conclusion(
                 variant_name=variant_label,
@@ -455,7 +519,8 @@ class BayesianEngine:
                 "variant_index": i,
                 "variant_label": variant_label,
                 "prob_beat_control": prob_beat_control,
-                "prob_best_overall": prob_best_overall[i],
+                "prob_revenue_better": prob_revenue_better,
+                "prob_best_overall": float(prob_best[i]),
                 "expected_uplift": round(uplift, 2),
                 "expected_risk": round(risk, 2),
                 "expected_total_contribution": round(uplift - risk, 2),
