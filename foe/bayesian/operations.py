@@ -23,10 +23,23 @@ class LiftPrior:
 
 
 _LIFT_PRIOR_STD: Dict[str, float] = {
-    "skeptical":     0.10,
-    "moderate":      0.25,
-    "uninformative": 1.00,
+    "narrow": 0.10,
+    "medium": 0.25,
+    "wide":   1.00,
 }
+
+# Original names, kept as aliases so existing callers keep working. They
+# describe the prior's width only when expected_lift_pct is 0: a narrow prior
+# around a non-zero lift is a confident directional belief, not skepticism.
+_LIFT_PRIOR_WIDTH_ALIASES: Dict[str, str] = {
+    "skeptical":     "narrow",
+    "moderate":      "medium",
+    "uninformative": "wide",
+}
+
+LiftPriorWidth = Literal[
+    "narrow", "medium", "wide", "skeptical", "moderate", "uninformative"
+]
 
 # Default projection period used when no BusinessCaseInput is available.
 _DEFAULT_PROJECTION_DAYS: int = 30
@@ -42,30 +55,38 @@ def get_beta_prior() -> BetaPrior:
 
 def get_lift_prior(
     expected_lift_pct: float,
-    skepticism: Literal["skeptical", "moderate", "uninformative"],
+    skepticism: LiftPriorWidth,
 ) -> LiftPrior:
     """
-    Builds a log-normal lift prior from a directional expectation and a
-    skepticism level controlling how strongly large lifts are penalised.
+    Builds a normal prior on log-lift, centred at log(1 + expected_lift_pct/100),
+    with a width that controls how strongly lifts far from that centre are
+    penalised.
 
     Args:
         expected_lift_pct: Expected relative lift as a percentage (e.g. 5.0
                            for +5%). Use 0.0 for no directional expectation.
                            Must be greater than -100.
-        skepticism:        How tightly the prior constrains implausible lifts.
-                           'skeptical' applies strong pressure; 'uninformative'
-                           applies almost none.
+        skepticism:        Prior width on the log-lift scale: 'narrow'
+                           (sigma 0.10), 'medium' (0.25) or 'wide' (1.00).
+                           The original names 'skeptical', 'moderate' and
+                           'uninformative' are accepted as aliases.
+
+    Only a prior centred at 0 is skeptical. A narrow prior around a non-zero
+    expected lift is a confident belief in that direction (+20% / narrow
+    alone gives P(lift > 0) ~ 0.97); see prior_prob_positive_lift.
     """
-    if skepticism not in _LIFT_PRIOR_STD:
+    width = _LIFT_PRIOR_WIDTH_ALIASES.get(skepticism, skepticism)
+    if width not in _LIFT_PRIOR_STD:
         raise ValueError(
-            f"skepticism must be one of {list(_LIFT_PRIOR_STD)}, got {skepticism!r}."
+            f"skepticism must be one of {list(_LIFT_PRIOR_STD)} (or the aliases "
+            f"{list(_LIFT_PRIOR_WIDTH_ALIASES)}), got {skepticism!r}."
         )
     if expected_lift_pct <= -100:
         raise ValueError("expected_lift_pct must be greater than -100.")
 
     return LiftPrior(
         mean_log_lift=np.log1p(expected_lift_pct / 100.0),
-        std_log_lift=_LIFT_PRIOR_STD[skepticism],
+        std_log_lift=_LIFT_PRIOR_STD[width],
     )
 
 
@@ -76,7 +97,7 @@ def prior_prob_positive_lift(lift_prior: Optional[LiftPrior]) -> float:
     0.5 means the prior is neutral about direction. Anything else means the
     prior by itself pushes prob_beat_control toward one side. A non-zero
     expected lift combined with a narrow ('skeptical') prior is a strong
-    directional belief: +10% / skeptical gives ~0.83 here. Callers should
+    directional belief: +10% / narrow gives ~0.83 here. Callers should
     surface this value so the prior's pull on the decision is visible.
 
     This is the lift-prior component only; the flat Beta(1, 1) base prior is

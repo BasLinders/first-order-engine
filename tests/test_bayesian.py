@@ -626,3 +626,23 @@ def test_monetary_counts_aov_difference_at_equal_rates(engine, variant_aov, sign
     else:
         assert r["prob_revenue_better"] < 0.05
         assert r["expected_risk"] > 0 and r["expected_risk"] > 20 * r["expected_uplift"]
+
+
+# --- Lift prior width names ---
+
+@pytest.mark.parametrize("width, alias, std", [
+    ("narrow", "skeptical", 0.10),
+    ("medium", "moderate", 0.25),
+    ("wide", "uninformative", 1.00),
+])
+@pytest.mark.parametrize("lift", [0.0, 7.5])
+def test_lift_prior_width_names_and_aliases(width, alias, std, lift):
+    new, old = get_lift_prior(lift, width), get_lift_prior(lift, alias)
+    assert new == old
+    assert new.std_log_lift == std
+    assert new.mean_log_lift == pytest.approx(np.log1p(lift / 100))
+
+
+def test_lift_prior_unknown_width_raises():
+    with pytest.raises(ValueError, match="narrow.*skeptical"):
+        get_lift_prior(0.0, "tight")
