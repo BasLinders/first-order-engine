@@ -61,6 +61,7 @@ first-order-engine/
 │   │   └── priors.py            # Informed Beta prior construction
 │   ├── frequentist/
 │   │   ├── operations.py        # FrequentistEngine (z-test, Sidak, bootstrap power)
+│   │   ├── risk.py              # False-positive risk (incl. at observed p) and FNDR
 │   │   └── confidence.py        # Non-inferiority testing
 │   ├── bayesian/
 │   │   └── operations.py        # BayesianEngine (Beta-Binomial, lift prior, monetary projection)

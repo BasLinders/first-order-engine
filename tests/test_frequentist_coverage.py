@@ -151,15 +151,16 @@ def test_fndr_prior_one_is_certain_miss():
     assert fndr == 1.0
 
 
-def test_fpr_zero_denominator_returns_zero():
-    """Degenerate inputs hit the guarded zero-denominator branch."""
-    assert Engine.calculate_false_positive_risk(0.0, 0.0, 0.0) == 0.0
+def test_fpr_degenerate_inputs_raise():
+    """alpha and power outside (0, 1) are rejected, so no zero denominators."""
+    with pytest.raises(ValueError, match="alpha"):
+        Engine.calculate_false_positive_risk(0.0, 0.0, 0.0)
 
 
-def test_fndr_zero_denominator_returns_zero():
-    """Degenerate inputs hit the guarded zero-denominator branch."""
-    fndr = Engine.calculate_false_negative_discovery_rate(0.0, 1.0, 1.0)
-    assert fndr == 0.0
+def test_fndr_degenerate_inputs_raise():
+    """alpha and power outside (0, 1) are rejected, so no zero denominators."""
+    with pytest.raises(ValueError, match="power"):
+        Engine.calculate_false_negative_discovery_rate(0.05, 1.0, 1.0)
 
 
 # --------------------------------------------------------------------- #

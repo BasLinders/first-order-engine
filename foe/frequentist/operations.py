@@ -6,6 +6,7 @@ from scipy.stats import norm
 from typing import List, Dict, Any, Optional, Tuple
 
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
+from foe.frequentist import risk as _risk
 from foe.frequentist.confidence import (
     compute_interval_difference,
     compute_newcombe_interval,
@@ -18,15 +19,6 @@ def apply_sidak(alpha: float, num_variants: int) -> float:
     if num_comparisons <= 1:
         return alpha
     return 1 - (1 - alpha) ** (1 / num_comparisons)
-
-
-# Prior P(H1) presets, shared with the UI tool. Skeptical = most experiments
-# don't move the needle; optimistic = strong belief the variant has an effect.
-_PRIOR_PRESETS: Dict[str, float] = {
-    "skeptical": 0.10,
-    "neutral": 0.50,
-    "optimistic": 0.90,
-}
 
 
 class FrequentistEngine:
@@ -544,7 +536,9 @@ class FrequentistEngine:
     # ------------------------------------------------------------------ #
     #  Decision risk: false-positive / false-negative
     #
-    #  Composable helpers. Deliberately NOT wired into run_synthesis: the
+    #  The maths lives in foe.frequentist.risk (use risk.assess_risk for any
+    #  test that reports a p-value, including FPR at the observed p); these
+    #  methods delegate to it. Deliberately NOT wired into run_synthesis: the
     #  FrequentistResult contract (see test_frequentist.py) carries inference
     #  fields only. Call assess_result_risk from a reporting layer: it takes a
     #  pre-specified MDE and applies the same Šidák alpha as run_synthesis.
@@ -554,66 +548,25 @@ class FrequentistEngine:
 
     @staticmethod
     def resolve_prior_probability(
-        sensitivity_mode: str = "neutral",
+        sensitivity_mode: str = _risk.DEFAULT_SENSITIVITY_MODE,
         custom_prior: Optional[float] = None,
     ) -> float:
-        """
-        Resolves a prior P(H1) — probability a real effect exists, before data —
-        from a named preset or an explicit value.
-
-        Presets: skeptical=0.10, neutral=0.50, optimistic=0.90. With
-        sensitivity_mode='custom', `custom_prior` (in [0, 1]) is used directly.
-        """
-        if sensitivity_mode == "custom":
-            if custom_prior is None:
-                raise ValueError(
-                    "custom_prior must be provided when sensitivity_mode is 'custom'."
-                )
-            if not 0.0 <= custom_prior <= 1.0:
-                raise ValueError(
-                    f"custom_prior must be between 0 and 1, got {custom_prior}."
-                )
-            return float(custom_prior)
-        if sensitivity_mode not in _PRIOR_PRESETS:
-            raise ValueError(
-                f"Unknown sensitivity_mode '{sensitivity_mode}'. "
-                f"Expected one of {list(_PRIOR_PRESETS) + ['custom']}."
-            )
-        return _PRIOR_PRESETS[sensitivity_mode]
+        """Prior P(H1) from a preset or custom value. See foe.frequentist.risk.resolve_prior."""
+        return _risk.resolve_prior(sensitivity_mode, custom_prior)
 
     @staticmethod
     def calculate_false_positive_risk(
         alpha: float, power: float, prior: float
     ) -> float:
-        """
-        P(H0 | significant) — probability a significant result is a false
-        positive, by Bayes' rule:
-
-            FPR = α·P(H0) / [ α·P(H0) + power·P(H1) ]
-
-        with P(H1) = prior, P(H0) = 1 - prior.
-        """
-        p1, p0 = prior, 1.0 - prior
-        denominator = (alpha * p0) + (power * p1)
-        return (alpha * p0) / denominator if denominator else 0.0
+        """Standard FPR, P(H0 | significant). See foe.frequentist.risk.false_positive_risk."""
+        return _risk.false_positive_risk(alpha, power, prior)
 
     @staticmethod
     def calculate_false_negative_discovery_rate(
         alpha: float, power: float, prior: float
     ) -> float:
-        """
-        P(H1 | not significant) — probability a non-significant result missed a
-        real effect, by Bayes' rule:
-
-            FNDR = β·P(H1) / [ β·P(H1) + (1-α)·P(H0) ]
-
-        with β = 1 - power. High FNDR on a flat result means underpowered, not
-        necessarily inert.
-        """
-        p1, p0 = prior, 1.0 - prior
-        beta = 1.0 - power
-        denominator = (beta * p1) + ((1.0 - alpha) * p0)
-        return (beta * p1) / denominator if denominator else 0.0
+        """FNDR, P(H1 | not significant). See foe.frequentist.risk.false_negative_discovery_rate."""
+        return _risk.false_negative_discovery_rate(alpha, power, prior)
 
     @classmethod
     def assess_decision_risk(
