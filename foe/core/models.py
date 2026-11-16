@@ -168,6 +168,46 @@ class BoschlooResult(BaseModel):
     conclusion: str
 
 
+class DecisionRiskResult(BaseModel):
+    """
+    Output of foe.frequentist.risk.assess_risk: the false-positive and
+    false-negative risk of one comparison, with the assumptions used, so a UI
+    or export can state them ("prior 10%, power 80%").
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    alternative: AlternativeHypothesis
+    alpha: float = Field(..., gt=0.0, lt=1.0, description="Per-comparison alpha used.")
+    power: float = Field(
+        ..., gt=0.0, lt=1.0, description="Planned power at the pre-specified MDE."
+    )
+    prior: float = Field(
+        ..., ge=0.0, le=1.0, description="P(H1): prior probability of a real effect."
+    )
+    is_significant: bool = Field(..., description="p_value < alpha.")
+    fpr: float = Field(
+        ...,
+        description=(
+            "Standard false-positive risk ('p <= alpha' approach): P(H0 | significant). "
+            "Identical for every significant result at a given alpha, power and "
+            "prior, so it is context, not evidence about this result."
+        ),
+    )
+    fndr: float = Field(
+        ..., description="False-negative discovery rate: P(H1 | not significant)."
+    )
+    fpr_at_p: Optional[float] = Field(
+        None,
+        description=(
+            "False-positive risk at the observed p-value (Colquhoun 2017, "
+            "'p-equals' approach). Weighs the strength of the evidence. None "
+            "when the result is not significant."
+        ),
+    )
+
+
 class BayesianResult(BaseModel):
     """Standardized output for a single Bayesian variant comparison."""
 
