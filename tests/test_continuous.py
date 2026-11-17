@@ -53,7 +53,11 @@ def test_heuristic_normal_homogeneous_uses_standard_anova(engine):
     assert result.is_normal is True
     assert result.is_homogeneous is True
     assert result.is_significant is True
-    assert result.posthoc_results is None  # heuristic path never posthocs
+    # Significant with 3 groups -> all-pairs Tukey HSD.
+    assert result.posthoc_test_name == "Tukey HSD"
+    assert {r.comparison for r in result.posthoc_results} == {
+        "B vs A", "C vs A", "C vs B",
+    }
 
 
 def test_heuristic_identical_groups_not_significant(engine):
@@ -73,10 +77,7 @@ def test_heuristic_identical_groups_not_significant(engine):
 def test_heuristic_normal_heterogeneous_uses_welch(engine):
     """
     Normal residuals with heterogeneous variance (verified: p_norm ~= 0.68,
-    levene p ~= 1e-13 at seed=15) must route to Welch's ANOVA rather than
-    crashing -- regression test for the aov["p-unc"]/aov["p_unc"] column
-    name mismatch against the installed pingouin version. The pingouin-version
-    independent check lives in test_pingouin_col_* below.
+    levene p ~= 1e-13 at seed=15) must route to Welch's ANOVA.
     """
     rng = np.random.default_rng(15)
     n = 500
@@ -90,25 +91,6 @@ def test_heuristic_normal_heterogeneous_uses_welch(engine):
     assert result.is_normal is True
     assert result.is_homogeneous is False
     assert 0.0 <= result.p_value <= 1.0
-
-
-@pytest.mark.parametrize("p_col", ["p_unc", "p-unc"])
-def test_pingouin_col_accepts_both_pingouin_spellings(p_col):
-    """
-    pingouin >= 0.6 names Welch's p-value column "p_unc"; 0.5.x (still allowed
-    by the dependency floor, and pinned by downstream apps) names it "p-unc".
-    Both must resolve, whichever pingouin happens to be installed.
-    """
-    aov = pd.DataFrame({"Source": ["g"], "F": [4.2], p_col: [0.041], "np2": [0.01]})
-    col = ContinuousMetricEngine._pingouin_col(aov, "p_unc", "p-unc")
-    assert col == p_col
-    assert float(aov[col].iloc[0]) == pytest.approx(0.041)
-
-
-def test_pingouin_col_raises_clear_error_when_no_candidate_present():
-    aov = pd.DataFrame({"Source": ["g"], "pvalue": [0.041]})
-    with pytest.raises(KeyError, match="p_unc"):
-        ContinuousMetricEngine._pingouin_col(aov, "p_unc", "p-unc")
 
 
 def test_heuristic_non_normal_two_groups_uses_mann_whitney(engine):
@@ -647,6 +629,431 @@ def test_winsorize_series_all_nan_returns_original(engine):
     assert upper == 0.0
 
 
+def test_winsorize_series_exclude_zeros_leaves_zeros_and_uses_nonzero_bounds(engine):
+    """
+    Per-visitor data: a positive lower cap must never lift a zero (a
+    non-converting visitor), and the caps come from the buyers only.
+    """
+    buyers = [90.0, 95.0, 100.0, 105.0, 110.0, 400.0]
+    s = pd.Series([0.0] * 6 + buyers)
+    clipped, lower, upper = ContinuousMetricEngine.winsorize_series(
+        s, method="Percentile", param=10.0, exclude_zeros=True
+    )
+    exp_lower, exp_upper = np.percentile(buyers, [10.0, 90.0])
+    assert lower == pytest.approx(exp_lower)
+    assert upper == pytest.approx(exp_upper)
+    assert clipped[:6] == [0.0] * 6
+    assert clipped[6] == pytest.approx(exp_lower)  # 90 lifted to the lower cap
+    assert clipped[-1] == pytest.approx(exp_upper)
+
+
+def test_winsorize_series_exclude_zeros_keeps_nan(engine):
+    s = pd.Series([0.0, np.nan, 10.0, 12.0, 11.0])
+    clipped, _, _ = ContinuousMetricEngine.winsorize_series(s, exclude_zeros=True)
+    assert clipped[0] == 0.0
+    assert math.isnan(clipped[1])
+
+
+def test_winsorize_series_exclude_zeros_all_zero_returns_original(engine):
+    s = pd.Series([0.0, 0.0, 0.0])
+    clipped, lower, upper = ContinuousMetricEngine.winsorize_series(
+        s, exclude_zeros=True
+    )
+    assert clipped == [0.0, 0.0, 0.0]
+    assert (lower, upper) == (0.0, 0.0)
+
+
+def test_winsorize_series_central_percentile_keeps_central_share(engine):
+    """'Central Percentile' 95 keeps the middle 95%: 2.5th and 97.5th percentiles."""
+    s = pd.Series(np.arange(1.0, 201.0))
+    _, lower, upper = ContinuousMetricEngine.winsorize_series(
+        s, method="Central Percentile", param=95.0
+    )
+    exp = np.percentile(s, [2.5, 97.5])
+    assert (lower, upper) == (pytest.approx(exp[0]), pytest.approx(exp[1]))
+
+
+def test_winsorize_series_central_percentile_equals_tail_percentile(engine):
+    """Central 95 == 2.5 per tail in the legacy 'Percentile' convention."""
+    s = pd.Series(np.random.default_rng(3).lognormal(3, 1, 500))
+    a = ContinuousMetricEngine.winsorize_series(s, "Central Percentile", 95.0)
+    b = ContinuousMetricEngine.winsorize_series(s, "Percentile", 2.5)
+    assert a == b
+
+
+@pytest.mark.parametrize("param", [0.0, -5.0, 100.5])
+def test_winsorize_series_central_percentile_rejects_out_of_range(engine, param):
+    with pytest.raises(ValueError, match="Central Percentile"):
+        ContinuousMetricEngine.winsorize_series(
+            pd.Series([1.0, 2.0, 3.0]), "Central Percentile", param
+        )
+
+
+# --------------------------------------------------------------------- #
+#  detect_outliers (zero-aware, size-dependent method)
+# --------------------------------------------------------------------- #
+
+
+def _per_visitor_frame(n_buyers=40, n_zeros=10, spike=140.0, seed=0):
+    rng = np.random.default_rng(seed)
+    a = np.r_[rng.normal(100, 5, n_buyers), np.zeros(n_zeros)]
+    b = np.r_[rng.normal(100, 5, n_buyers), np.zeros(n_zeros)]
+    a[0] = spike
+    return make_df({"A": a, "B": b})
+
+
+def test_detect_outliers_never_flags_zero_rows(engine):
+    df = _per_visitor_frame()
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue")
+    mask = np.array(res.mask)
+    assert res.method == "ols_influence"
+    assert not mask[df["revenue"].to_numpy() == 0].any()
+    assert mask[0]  # the 140 spike among ~N(100, 5) buyers
+    assert res.n_considered == int((df["revenue"] != 0).sum())
+    assert res.n_outliers == int(mask.sum())
+
+
+def test_detect_outliers_including_zeros_hides_the_real_outlier(engine):
+    """
+    Contrast with the test above: with the zero mass in the fit, the spread is
+    inflated so much that the 140 spike among ~N(100, 5) buyers is missed.
+    This is why exclude_zeros defaults to True.
+    """
+    df = _per_visitor_frame()
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue", exclude_zeros=False)
+    assert res.mask[0] is False
+    assert res.n_considered == len(df)
+
+
+def test_detect_outliers_large_data_uses_per_variant_sd(engine):
+    df = _per_visitor_frame()
+    res = ContinuousMetricEngine.detect_outliers(
+        df, "revenue", large_n_threshold=10
+    )
+    assert res.method == "per_variant_sd"
+    mask = np.array(res.mask)
+    # Hand check on variant A's buyers.
+    a_buyers = df.loc[(df[GROUP_COL] == "A") & (df["revenue"] != 0), "revenue"]
+    lo = a_buyers.mean() - 3 * a_buyers.std()
+    hi = a_buyers.mean() + 3 * a_buyers.std()
+    expected = ((a_buyers < lo) | (a_buyers > hi)).to_numpy()
+    assert (mask[a_buyers.index] == expected).all()
+    assert mask[0]
+    assert not mask[df["revenue"].to_numpy() == 0].any()
+
+
+def test_detect_outliers_mask_aligns_positionally_with_custom_index(engine):
+    df = _per_visitor_frame()
+    df.index = np.arange(len(df))[::-1] * 7  # non-default, descending index
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue")
+    assert len(res.mask) == len(df)
+    assert res.mask[0] is True  # still the first row positionally
+
+
+def test_detect_outliers_missing_values_are_never_flagged(engine):
+    df = _per_visitor_frame()
+    df.loc[df.index[5], "revenue"] = np.nan
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue")
+    assert res.mask[5] is False
+    assert len(res.mask) == len(df)
+
+
+def test_detect_outliers_custom_group_col(engine):
+    df = _per_visitor_frame().rename(columns={GROUP_COL: "arm"})
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue", group_col="arm")
+    assert res.mask[0] is True
+
+
+def test_detect_outliers_all_zero_returns_method_none(engine):
+    df = make_df({"A": np.zeros(5), "B": np.zeros(5)})
+    res = ContinuousMetricEngine.detect_outliers(df, "revenue")
+    assert res.method == "none"
+    assert res.mask == [False] * 10
+    assert res.n_outliers == 0
+
+
+# --------------------------------------------------------------------- #
+#  Native one-way tests and post-hocs: fixed reference values
+#  (computed with pingouin 0.7.0, statsmodels 0.14.6, scikit-posthocs; FOE
+#  does not depend on those libraries)
+# --------------------------------------------------------------------- #
+
+
+REF_GROUPS = {
+    "A": [12.1, 14.3, 11.8, 13.5, 12.9, 14.0, 13.2],
+    "B": [15.2, 16.8, 14.9, 17.5, 16.1, 15.7],
+    "C": [11.0, 19.5, 8.2, 22.4, 13.3, 17.9, 9.6, 20.1],
+}
+REF_LABELS = list(REF_GROUPS)
+REF_ARRAYS = [np.array(v) for v in REF_GROUPS.values()]
+
+
+def test_welch_anova_matches_reference():
+    f_stat, df1, df2, p = ContinuousMetricEngine.welch_anova(REF_ARRAYS)
+    assert f_stat == pytest.approx(14.276554, rel=1e-6)
+    assert df1 == 2
+    assert df2 == pytest.approx(11.272218, rel=1e-6)
+    assert p == pytest.approx(0.000814, rel=1e-3)
+
+
+def test_eta_squared_matches_reference():
+    assert ContinuousMetricEngine.eta_squared(REF_ARRAYS) == pytest.approx(
+        0.125539, rel=1e-5
+    )
+
+
+def test_welch_anova_rejects_zero_variance_group():
+    with pytest.raises(ValueError, match="zero variance"):
+        ContinuousMetricEngine.welch_anova([[1.0, 2.0, 3.0], [5.0, 5.0, 5.0]])
+
+
+def test_welch_anova_rejects_group_with_one_row():
+    with pytest.raises(ValueError, match="2\\+ rows"):
+        ContinuousMetricEngine.welch_anova([[1.0, 2.0, 3.0], [5.0]])
+
+
+def test_tukey_hsd_matches_reference():
+    res = ContinuousMetricEngine.tukey_hsd(REF_LABELS, REF_ARRAYS)
+    # statsmodels pairwise_tukeyhsd: meandiff = later - earlier label.
+    expected = [
+        ("B vs A", 2.91904762, -1.96764208, 7.80573732, 0.30337082),
+        ("C vs A", 2.13571429, -2.41018017, 6.68160874, 0.46886434),
+        ("C vs B", -0.78333333, -5.52696687, 3.96030021, 0.90723175),
+    ]
+    assert [r.comparison for r in res] == [e[0] for e in expected]
+    for r, (_, diff, lo, hi, p) in zip(res, expected):
+        assert r.mean_diff == pytest.approx(diff, rel=1e-7)
+        assert r.ci_low == pytest.approx(lo, rel=1e-7)
+        assert r.ci_high == pytest.approx(hi, rel=1e-7)
+        assert r.p_value == pytest.approx(p, rel=1e-6)
+        assert r.p_adj == r.p_value
+        assert r.adjustment == "tukey"
+        assert r.statistic_name == "q"
+        assert r.is_significant is False
+
+
+def test_games_howell_matches_reference():
+    res = ContinuousMetricEngine.games_howell(REF_LABELS, REF_ARRAYS)
+    # pingouin reports A - B; FOE reports B vs A, so diff and t flip sign.
+    expected = [
+        ("B vs A", 2.919048, 5.480428, 0.000612),
+        ("C vs A", 2.135714, 1.102656, 0.540643),
+        ("C vs B", -0.783333, -0.402369, 0.915584),
+    ]
+    assert [r.comparison for r in res] == [e[0] for e in expected]
+    for r, (_, diff, t, p) in zip(res, expected):
+        assert r.mean_diff == pytest.approx(diff, rel=1e-5)
+        assert r.statistic == pytest.approx(t, rel=1e-5)
+        assert r.p_value == pytest.approx(p, rel=1e-3)
+        assert r.adjustment == "games-howell"
+        assert r.ci_low < r.mean_diff < r.ci_high
+    assert [r.is_significant for r in res] == [True, False, False]
+
+
+def test_games_howell_ci_excludes_zero_iff_significant():
+    res = ContinuousMetricEngine.games_howell(REF_LABELS, REF_ARRAYS)
+    for r in res:
+        assert (r.ci_low > 0 or r.ci_high < 0) == r.is_significant
+
+
+def test_dunn_test_matches_reference_with_ties():
+    labels = ["A", "B", "C"]
+    groups = [[1, 2, 2, 3, 4], [3, 4, 4, 5, 6, 6], [6, 7, 7, 8, 9]]
+    res = {r.comparison: r for r in ContinuousMetricEngine.dunn_test(labels, groups)}
+    expected = {  # (raw p, Bonferroni p) from scikit-posthocs posthoc_dunn
+        "B vs A": (0.096686, 0.290058),
+        "C vs A": (0.000563, 0.001690),
+        "C vs B": (0.052269, 0.156808),
+    }
+    assert set(res) == set(expected)
+    for comp, (p, p_adj) in expected.items():
+        # Reference values are rounded to 6 decimals.
+        assert res[comp].p_value == pytest.approx(p, abs=1e-6)
+        assert res[comp].p_adj == pytest.approx(p_adj, abs=1e-6)
+        assert res[comp].adjustment == "bonferroni"
+        assert res[comp].statistic_name == "z"
+    assert res["C vs A"].statistic > 0  # C ranks higher than A
+    assert res["C vs A"].is_significant is True
+    assert res["C vs B"].is_significant is False
+
+
+# --------------------------------------------------------------------- #
+#  run_comparison_suite: post-hocs, effect sizes, diagnostics
+# --------------------------------------------------------------------- #
+
+
+def test_heuristic_anova_reports_f_eta_squared_and_diagnostics(engine):
+    rng = np.random.default_rng(0)
+    groups = {k: rng.normal(m, 15, 200) for k, m in [("A", 100), ("B", 100), ("C", 115)]}
+    result = engine.run_comparison_suite(
+        make_df(groups), ContinuousMetricConfig(kpi="revenue")
+    )
+    assert result.test_statistic_name == "F"
+    assert result.test_statistic > 0
+    assert result.effect_size_name == "eta_squared"
+    assert result.effect_size == pytest.approx(
+        ContinuousMetricEngine.eta_squared(list(groups.values())), rel=1e-9
+    )
+    assert result.normality_p >= 0.05 and result.normality_stat is not None
+    assert result.levene_p >= 0.05 and result.levene_stat is not None
+
+
+def test_heuristic_welch_three_groups_runs_games_howell(engine):
+    # Verified at seed=15: normality p ~= 0.31, Levene p ~= 3e-17.
+    rng = np.random.default_rng(15)
+    df = make_df({
+        "A": rng.normal(100, 8, 400),
+        "B": rng.normal(103, 11, 400),
+        "C": rng.normal(100, 14, 400),
+    })
+    result = engine.run_comparison_suite(df, ContinuousMetricConfig(kpi="revenue"))
+    assert result.test_name == "Welch's ANOVA"
+    assert result.is_significant is True
+    assert result.posthoc_test_name == "Games-Howell"
+    assert len(result.posthoc_results) == 3
+    assert all(r.adjustment == "games-howell" for r in result.posthoc_results)
+    assert result.effect_size_name == "partial_eta_squared"
+    f_ref, _, _, p_ref = ContinuousMetricEngine.welch_anova(
+        [g["revenue"].to_numpy() for _, g in df.groupby(GROUP_COL)]
+    )
+    assert result.test_statistic == pytest.approx(f_ref)
+    assert result.p_value == pytest.approx(p_ref)
+
+
+def test_heuristic_kruskal_runs_dunn_and_eta_squared_h(engine):
+    rng = np.random.default_rng(0)
+    groups = {"A": rng.exponential(20, 200), "B": rng.exponential(20, 200),
+              "C": rng.exponential(35, 200)}
+    result = engine.run_comparison_suite(
+        make_df(groups), ContinuousMetricConfig(kpi="revenue")
+    )
+    assert result.test_name == "Kruskal-Wallis"
+    assert result.posthoc_test_name == "Dunn (Bonferroni)"
+    assert len(result.posthoc_results) == 3
+    for r in result.posthoc_results:
+        assert r.p_adj >= r.p_value
+    h = result.test_statistic
+    assert result.test_statistic_name == "H"
+    assert result.effect_size_name == "eta_squared_h"
+    assert result.effect_size == pytest.approx((h - 3 + 1) / (600 - 3))
+
+
+def test_heuristic_kruskal_eta_squared_h_clamped_at_zero(engine):
+    """With no effect, H < k - 1 makes the raw formula negative; report 0."""
+    rng = np.random.default_rng(0)
+    for seed in range(50):
+        rng = np.random.default_rng(seed)
+        df = make_df({k: rng.exponential(20, 100) for k in "ABC"})
+        result = engine.run_comparison_suite(df, ContinuousMetricConfig(kpi="revenue"))
+        if result.test_name == "Kruskal-Wallis" and result.test_statistic < 2:
+            assert result.effect_size == 0.0
+            return
+    pytest.fail("no seed produced H < k - 1")
+
+
+def test_heuristic_mann_whitney_rank_biserial(engine):
+    rng = np.random.default_rng(0)
+    a, b = rng.exponential(20, 200), rng.exponential(30, 200)
+    result = engine.run_comparison_suite(
+        make_df({"A": a, "B": b}), ContinuousMetricConfig(kpi="revenue")
+    )
+    from scipy.stats import mannwhitneyu
+    u = mannwhitneyu(a, b, alternative="two-sided").statistic
+    assert result.test_statistic_name == "U"
+    assert result.test_statistic == pytest.approx(u)
+    assert result.effect_size_name == "rank_biserial"
+    assert result.effect_size == pytest.approx(1 - 2 * u / (200 * 200))
+    assert result.effect_size > 0  # B (second in sort order) is larger
+    assert result.posthoc_results is None
+
+
+def test_heuristic_no_posthoc_when_not_significant(engine):
+    rng = np.random.default_rng(0)
+    df = make_df({k: rng.normal(100, 15, 200) for k in "ABC"})
+    result = engine.run_comparison_suite(df, ContinuousMetricConfig(kpi="revenue"))
+    assert result.is_significant is False
+    assert result.posthoc_results is None
+    assert result.posthoc_test_name is None
+
+
+def test_heuristic_posthoc_uses_config_alpha(engine):
+    """Post-hoc significance follows config.alpha, not a hardcoded 0.05."""
+    rng = np.random.default_rng(0)
+    df = make_df({"A": rng.normal(100, 15, 200), "B": rng.normal(100, 15, 200),
+                  "C": rng.normal(104, 15, 200)})
+    strict = engine.run_comparison_suite(
+        df, ContinuousMetricConfig(kpi="revenue", alpha=0.2)
+    )
+    for r in strict.posthoc_results or []:
+        assert r.is_significant == (r.p_adj < 0.2)
+
+
+def test_heuristic_posthoc_labels_match_group_values_for_unsorted_input(engine):
+    """
+    Labels must follow the data, not row order: a frame listed C, A, B must
+    still report C's comparison with C's mean.
+    """
+    rng = np.random.default_rng(1)
+    df = pd.concat([
+        make_df({"C": rng.normal(130, 10, 100)}),
+        make_df({"A": rng.normal(100, 10, 100)}),
+        make_df({"B": rng.normal(100, 10, 100)}),
+    ], ignore_index=True)
+    result = engine.run_comparison_suite(df, ContinuousMetricConfig(kpi="revenue"))
+    by_comp = {r.comparison: r for r in result.posthoc_results}
+    means = df.groupby(GROUP_COL)["revenue"].mean()
+    assert by_comp["C vs A"].mean_diff == pytest.approx(means["C"] - means["A"])
+    assert by_comp["C vs A"].mean_diff > 20
+
+
+def test_gamma_path_reports_lr_statistic_and_no_heuristic_diagnostics(engine):
+    rng = np.random.default_rng(0)
+    df = make_df({"A": rng.gamma(2.0, 30.0, 300), "B": rng.gamma(2.0, 45.0, 300)})
+    result = engine.run_comparison_suite(df, ContinuousMetricConfig(
+        kpi="revenue", approach=ContinuousApproach.GAMMA_GLM,
+    ))
+    assert result.test_statistic_name == "LR"
+    assert result.test_statistic > 0
+    assert result.effect_size is None
+    assert result.normality_p is None and result.levene_p is None
+
+
+def test_negbin_path_reports_variance_mean_ratio(engine):
+    rng = np.random.default_rng(0)
+    a = rng.negative_binomial(2, 0.4, 400)
+    b = rng.negative_binomial(2, 0.3, 400)
+    df = make_df({"A": a, "B": b})
+    result = engine.run_comparison_suite(df, ContinuousMetricConfig(
+        kpi="revenue", unit=AnalysisUnit.PER_VISITOR,
+    ))
+    assert result.test_name == "Negative Binomial Regression (LRT)"
+    pooled = np.r_[a, b].astype(float)
+    assert result.variance_mean_ratio == pytest.approx(
+        pooled.var(ddof=1) / pooled.mean()
+    )
+    assert result.test_statistic_name == "LR"
+
+
+# --------------------------------------------------------------------- #
+#  PairwiseComparisonResult back-compat
+# --------------------------------------------------------------------- #
+
+
+def test_gamma_posthoc_result_alias_and_deprecated_fields(engine):
+    from foe.core.models import GammaPosthocResult, PairwiseComparisonResult
+    assert GammaPosthocResult is PairwiseComparisonResult
+    r = ContinuousMetricEngine._lrt_posthoc_result("B", "A", 4.2, 0.02, 2, 0.05)
+    assert r.lrt_stat == r.statistic == 4.2
+    assert r.p_adj_bonferroni == r.p_adj == pytest.approx(0.04)
+    assert (r.group_a, r.group_b) == ("B", "A")
+
+
+def test_p_adj_bonferroni_undefined_for_tukey():
+    r = ContinuousMetricEngine.tukey_hsd(REF_LABELS, REF_ARRAYS)[0]
+    with pytest.raises(AttributeError, match="p_adj"):
+        r.p_adj_bonferroni
+
+
 # --------------------------------------------------------------------- #
 #  Gamma fitting primitives
 # --------------------------------------------------------------------- #
@@ -667,6 +1074,71 @@ def test_fit_gamma_recovers_known_shape_and_scale(engine):
     assert k == pytest.approx(2.0, rel=0.15)
     assert theta == pytest.approx(25.0, rel=0.15)
     assert math.isfinite(log_lik)
+
+
+@pytest.mark.parametrize("shape", [0.05, 0.4, 1.8, 12.0, 500.0])
+def test_fit_gamma_solves_both_score_equations(shape):
+    """
+    At the exact MLE: k * theta == mean(x), and the profile equation
+    log k - digamma(k) == log(mean(x)) - mean(log(x)) holds to machine precision.
+    """
+    from scipy.special import digamma
+    x = np.random.default_rng(3).gamma(shape, 10.0, 3000)
+    k, theta, log_lik = ContinuousMetricEngine.fit_gamma(x)
+    assert k * theta == pytest.approx(x.mean(), rel=1e-13)
+    s = np.log(x.mean()) - np.log(x).mean()
+    assert np.log(k) - digamma(k) == pytest.approx(s, rel=1e-11)
+    assert log_lik == pytest.approx(
+        -ContinuousMetricEngine.neg_log_likelihood([k, theta], x), rel=1e-14
+    )
+
+
+def test_fit_gamma_is_a_local_maximum():
+    from scipy import stats
+    x = np.random.default_rng(11).gamma(1.7, 40.0, 2500)
+    k, theta, ll = ContinuousMetricEngine.fit_gamma(x)
+    for dk, dt in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]:
+        kk, tt = k * (1 + 1e-5 * dk), theta * (1 + 1e-5 * dt)
+        assert stats.gamma.logpdf(x, a=kk, scale=tt).sum() < ll
+
+
+def test_fit_gamma_never_worse_than_generic_optimiser():
+    """
+    Regression for the previous fit: scipy.optimize.minimize from method-of-
+    moments starts stopped short of the maximum on ~18% of random samples
+    (log-likelihood up to 0.7 low). The exact fit must reach at least as high
+    a log-likelihood on every sample.
+    """
+    from scipy.optimize import minimize
+    rng = np.random.default_rng(1)
+    shortfalls = []
+    for _ in range(150):
+        x = rng.gamma(rng.uniform(0.5, 4), rng.uniform(5, 80), int(rng.integers(200, 3000)))
+        _, _, ll_exact = ContinuousMetricEngine.fit_gamma(x)
+        m, v = x.mean(), x.var(ddof=1)
+        res = minimize(ContinuousMetricEngine.neg_log_likelihood, [m * m / v, v / m],
+                       args=(x,), bounds=((1e-5, None), (1e-5, None)))
+        shortfalls.append(ll_exact - (-res.fun))
+    assert min(shortfalls) > -1e-8          # never worse
+    assert max(shortfalls) > 1e-3           # and the old fit really did fall short
+
+
+def test_fit_gamma_drops_missing_values():
+    x = np.random.default_rng(2).gamma(2.0, 5.0, 500)
+    with_nan = np.r_[x, np.nan, np.nan]
+    assert ContinuousMetricEngine.fit_gamma(with_nan) == ContinuousMetricEngine.fit_gamma(x)
+
+
+@pytest.mark.parametrize("data, match", [
+    ([1.0, 2.0, 0.0], "x > 0"),
+    ([1.0, -2.0, 3.0], "x > 0"),
+    ([4.0, 4.0, 4.0], "equal"),
+    ([4.0], "two observations"),
+    ([np.nan, 3.0], "two observations"),
+])
+def test_fit_gamma_rejects_invalid_input(data, match):
+    with pytest.raises(ValueError, match=match):
+        ContinuousMetricEngine.fit_gamma(data)
 
 
 def test_fit_unit_model_per_transaction_degenerate_returns_nan(engine):
