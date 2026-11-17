@@ -3,6 +3,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 
 from foe.continuous.operations import ContinuousMetricEngine
 from foe.core.models import (
@@ -568,7 +569,7 @@ def test_conclusion_significant_mentions_test_and_unit(engine):
     assert "Significant Variance Detected" in msg
     assert "Standard ANOVA" in msg
     assert "p=0.012" in msg
-    assert "value per transaction" in msg
+    assert "difference in Revenue per transaction between the variants" in msg
 
 
 def test_conclusion_not_significant_uses_per_visitor_phrase(engine):
@@ -576,7 +577,23 @@ def test_conclusion_not_significant_uses_per_visitor_phrase(engine):
         "Revenue", False, "Mann-Whitney U", 0.5, unit=AnalysisUnit.PER_VISITOR,
     )
     assert "No Significant Difference" in msg
-    assert "revenue per visitor" in msg
+    assert "p=0.500" in msg
+    assert "difference in Revenue per visitor across the variants" in msg
+
+
+@pytest.mark.parametrize("unit, phrase", [
+    (AnalysisUnit.PER_VISITOR, "per visitor"),
+    (AnalysisUnit.PER_TRANSACTION, "per transaction"),
+])
+@pytest.mark.parametrize("significant", [True, False])
+def test_conclusion_non_revenue_kpi_names_only_the_unit(engine, unit, phrase, significant):
+    """A count KPI must not be described as revenue or value."""
+    msg = ContinuousMetricEngine.generate_continuous_conclusion(
+        "total_item_quantity", significant, "Negative Binomial LRT", 0.01, unit=unit,
+    )
+    assert f"total_item_quantity {phrase}" in msg
+    assert "revenue" not in msg.lower()
+    assert "value" not in msg.lower()
 
 
 # --------------------------------------------------------------------- #
@@ -595,6 +612,47 @@ def test_detect_outliers_ols_flags_extreme_point(engine):
     mask = ContinuousMetricEngine.detect_outliers_ols(df, "revenue")
     assert mask[0] is True
     assert sum(mask) == 1
+
+
+def _uneven_normal_frame(n_large, n_small, seed):
+    rng = np.random.default_rng(seed)
+    return make_df({
+        "A": rng.normal(100, 10, n_large),
+        "B": rng.normal(100, 10, n_small),
+    })
+
+
+@pytest.mark.parametrize("threshold", [2.0, 3.0])
+def test_detect_outliers_ols_does_not_flag_small_variant_by_size(engine, threshold):
+    """
+    At a 90/10 split, leverage (1/n_g) and DFFITS used to flag the whole
+    small variant. On normal data its flagged share must now be close to
+    the large variant's: about the two-sided normal tail beyond threshold.
+    """
+    small_shares, large_shares = [], []
+    for seed in range(10):
+        df = _uneven_normal_frame(1800, 200, seed)
+        mask = np.array(
+            ContinuousMetricEngine.detect_outliers_ols(df, "revenue", threshold)
+        )
+        is_small = (df[GROUP_COL] == "B").to_numpy()
+        small_shares.append(mask[is_small].mean())
+        large_shares.append(mask[~is_small].mean())
+
+    small, large = np.mean(small_shares), np.mean(large_shares)
+    expected = 2 * stats.norm.sf(threshold)  # 0.0455 at k=2, 0.0027 at k=3
+    assert max(small_shares) < 0.2  # never the whole variant
+    assert small == pytest.approx(expected, abs=0.015)
+    assert abs(small - large) < 0.015
+
+
+def test_detect_outliers_ols_flags_extreme_value_in_small_variant(engine):
+    df = _uneven_normal_frame(1800, 200, seed=1)
+    spike_pos = int(np.flatnonzero((df[GROUP_COL] == "B").to_numpy())[0])
+    df.loc[df.index[spike_pos], "revenue"] = 200.0  # 10 SD above the mean
+    mask = ContinuousMetricEngine.detect_outliers_ols(df, "revenue", threshold=3.0)
+    assert mask[spike_pos] is True
+    assert sum(mask) < 20  # the spike plus normal-tail rows, not the variant
 
 
 def test_detect_outliers_ols_empty_frame_returns_all_false(engine):
@@ -706,7 +764,7 @@ def test_detect_outliers_never_flags_zero_rows(engine):
     df = _per_visitor_frame()
     res = ContinuousMetricEngine.detect_outliers(df, "revenue")
     mask = np.array(res.mask)
-    assert res.method == "ols_influence"
+    assert res.method == "studentized_residual"
     assert not mask[df["revenue"].to_numpy() == 0].any()
     assert mask[0]  # the 140 spike among ~N(100, 5) buyers
     assert res.n_considered == int((df["revenue"] != 0).sum())

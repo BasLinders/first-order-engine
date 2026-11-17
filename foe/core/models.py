@@ -401,7 +401,7 @@ class OutlierDetectionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     mask: List[bool]
-    method: str  # "ols_influence", "per_variant_sd" or "none"
+    method: str  # "studentized_residual", "per_variant_sd" or "none"
     n_considered: int
     n_outliers: int
 
