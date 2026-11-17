@@ -713,23 +713,22 @@ class ContinuousMetricEngine:
         # items per order, always >= 1) push alpha to its lower bound. The Hessian is then
         # singular in alpha alone, so bse is NaN although the fit is fine -- NB2 with
         # alpha -> 0 is Poisson, and the log-likelihoods and LR statistic are valid. For
-        # that case identification of the regression coefficients is checked on a Poisson
-        # fit with the same design; separation still shows up there as NaN bse.
-        def _identified(res, exog) -> bool:
+        # that case identification is checked exactly: in this one-way design (intercept +
+        # one dummy per variant) the Poisson MLE is log(group mean), so it exists iff every
+        # group modelled has a positive total. A group of all zeros is the separation case.
+        # (Refitting a Poisson model and checking its bse is not a version-stable signal:
+        # statsmodels 0.15 returns huge but finite bse for a separated Poisson fit.)
+        group_totals = pd.Series(data).groupby(work[group_col].astype(str).to_numpy()).sum()
+
+        def _identified(res, group_totals_positive: bool) -> bool:
             if np.all(np.isfinite(res.bse)):
                 return True
-            if not float(res.params[-1]) <= NB_ALPHA_LOWER_BOUND:
-                return False
-            try:
-                pois = sm.Poisson(data, exog).fit(disp=0, maxiter=200)
-            except Exception:
-                return False
-            return bool(np.isfinite(pois.llf) and np.all(np.isfinite(pois.bse)))
+            return float(res.params[-1]) <= NB_ALPHA_LOWER_BOUND and group_totals_positive
 
         if (
             not (np.isfinite(ll_null) and np.isfinite(ll_alt))
-            or not _identified(res_null, exog_null)
-            or not _identified(res_alt, exog_alt)
+            or not _identified(res_null, bool(data.sum() > 0))
+            or not _identified(res_alt, bool((group_totals > 0).all()))
         ):
             raise ValueError(
                 "Negative Binomial model did not converge to a well-identified fit -- "
