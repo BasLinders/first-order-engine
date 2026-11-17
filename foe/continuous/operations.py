@@ -111,20 +111,19 @@ class ContinuousMetricEngine:
     ) -> str:
         """Generates a definitive, UI-agnostic summary for continuous evaluation."""
         unit_phrase = (
-            "revenue per visitor" if unit == AnalysisUnit.PER_VISITOR
-            else "value per transaction"
+            "per visitor" if unit == AnalysisUnit.PER_VISITOR else "per transaction"
         )
         if not is_significant:
             return (
                 f"No Significant Difference: Based on the {test_used} (p={p_value:.3f}), "
                 f"there is no statistically significant difference in {kpi} "
-                f"({unit_phrase}) across the variants. The metric performs similarly "
+                f"{unit_phrase} across the variants. The metric performs similarly "
                 "across all groups."
             )
 
         return (
             f"Significant Variance Detected: The {test_used} (p={p_value:.3f}) detected a "
-            f"statistically significant difference in {kpi} ({unit_phrase}) between the "
+            f"statistically significant difference in {kpi} {unit_phrase} between the "
             "variants. Review the summary statistics to identify the winning group."
         )
 
@@ -140,12 +139,16 @@ class ContinuousMetricEngine:
         group_col: str = "experience_variant_label",
     ) -> list[bool]:
         """
-        Uses OLS residuals and influence to detect outliers.
+        Flags rows whose internally studentized residual from
+        ``kpi ~ C(group_col)`` exceeds ``threshold`` in absolute value.
         Returns a boolean list (JSON serializable) instead of the model.
 
-        A row is flagged when any of these exceeds its threshold:
-        |internally studentized residual| > threshold, leverage >
-        threshold * p / n, |DFFITS| > threshold * sqrt(p / n).
+        Only the residual is used. In this one-way group design a row's
+        leverage is exactly 1 / n_g (its variant's size), so leverage and
+        DFFITS measure group size rather than how unusual the value is:
+        at uneven splits they flag most or all of a small variant. The
+        studentized residual already accounts for group size through
+        sqrt(1 - h).
         """
         if df.empty or len(df[kpi].dropna()) < 3:
             return [False] * len(df)
@@ -153,15 +156,7 @@ class ContinuousMetricEngine:
         model = smf.ols(f"{kpi} ~ C({group_col})", data=df).fit()
         influence = model.get_influence()
 
-        std_resid = np.abs(influence.resid_studentized_internal) > threshold
-        leverage = influence.hat_matrix_diag > (
-            threshold * (model.df_model + 1) / len(df)
-        )
-        dffits = np.abs(influence.dffits[0]) > (
-            threshold * np.sqrt((model.df_model + 1) / len(df))
-        )
-
-        outlier_mask = std_resid | leverage | dffits
+        outlier_mask = np.abs(influence.resid_studentized_internal) > threshold
         return outlier_mask.tolist()  # Safe for JSON
 
     @classmethod
@@ -184,8 +179,9 @@ class ContinuousMetricEngine:
 
         * More than ``large_n_threshold`` considered rows -> per-variant
           mean +/- threshold * sd (cheap at scale).
-        * Otherwise -> OLS influence (``detect_outliers_ols``) on the
-          considered rows.
+        * Otherwise -> |internally studentized residual| > threshold from
+          the one-way OLS fit (``detect_outliers_ols``) on the considered
+          rows; ``method`` is ``"studentized_residual"``.
 
         The returned mask is positionally aligned with ``df``; rows not
         considered are always False.
@@ -217,7 +213,7 @@ class ContinuousMetricEngine:
                     v > mean_v + threshold * sd_v
                 )
         else:
-            method = "ols_influence"
+            method = "studentized_residual"
             sub_mask = np.asarray(
                 cls.detect_outliers_ols(
                     sub.reset_index(drop=True), kpi, threshold, group_col
