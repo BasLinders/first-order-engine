@@ -9,7 +9,8 @@ import statsmodels.formula.api as smf
 from statsmodels.discrete.discrete_model import NegativeBinomial
 from scipy.stats import normaltest, levene, kruskal, mannwhitneyu, rankdata
 from scipy.stats import studentized_range
-from scipy.optimize import minimize
+from scipy.optimize import brentq
+from scipy.special import digamma
 from scipy import stats
 
 from foe.core.models import (
@@ -452,23 +453,51 @@ class ContinuousMetricEngine:
 
     @staticmethod
     def fit_gamma(data) -> tuple[float, float, float]:
-        """Fits a two-parameter Gamma (shape k, scale theta) by MLE.
-        Returns (k, theta, log_likelihood)."""
-        data_clean = pd.Series(data).dropna()
-        # Initial guess using Method of Moments
-        mean_val = data_clean.mean()
-        var_val = data_clean.var()
-        initial_params = [mean_val**2 / var_val, var_val / mean_val]
+        """
+        Fits a two-parameter Gamma (shape k, scale theta) by exact MLE.
+        Returns (k, theta, log_likelihood).
 
-        result = minimize(
-            ContinuousMetricEngine.neg_log_likelihood,
-            initial_params,
-            args=(data_clean.to_numpy(),),
-            bounds=((1e-5, None), (1e-5, None)),
-        )
-        k, theta = result.x
-        log_lik = -result.fun
-        return float(k), float(theta), float(log_lik)
+        The MLE of theta given k is mean(x) / k. Substituting it into the
+        score equation for k leaves the one-dimensional profile equation
+
+            log k - digamma(k) = log(mean(x)) - mean(log(x)) =: s,
+
+        whose left side falls strictly from +inf to 0, so it has exactly one
+        root for any s > 0 (s > 0 holds whenever the data are not all equal).
+        It is solved with Brent's method to machine precision, starting from
+        Minka's (2002) closed-form approximation. A general-purpose 2-D
+        optimiser stops short of the maximum on a sizeable share of samples,
+        which shifts likelihood-ratio p-values.
+
+        Missing values are dropped. Raises ValueError if fewer than two
+        values remain, any value is <= 0, or all values are equal.
+        """
+        x = pd.Series(data).dropna().to_numpy(dtype=float)
+        if x.size < 2:
+            raise ValueError("Need at least two observations to fit a Gamma.")
+        if np.any(x <= 0):
+            raise ValueError("The Gamma is defined for x > 0; got non-positive values.")
+
+        mean_x = float(x.mean())
+        s = math.log(mean_x) - float(np.log(x).mean())
+        if not s > 0:
+            raise ValueError("All values are equal; the Gamma shape is unbounded.")
+
+        def profile(k: float) -> float:
+            return math.log(k) - float(digamma(k)) - s
+
+        # Minka's approximation is within ~1.5% of the root; widen to a bracket.
+        k0 = (3.0 - s + math.sqrt((s - 3.0) ** 2 + 24.0 * s)) / (12.0 * s)
+        lo, hi = k0 / 2.0, k0 * 2.0
+        while profile(lo) <= 0:
+            lo /= 2.0
+        while profile(hi) >= 0:
+            hi *= 2.0
+        k = brentq(profile, lo, hi, xtol=1e-15, rtol=4 * np.finfo(float).eps, maxiter=200)
+
+        theta = mean_x / k
+        log_lik = float(stats.gamma.logpdf(x, a=k, scale=theta).sum())
+        return float(k), float(theta), log_lik
 
     @staticmethod
     def fit_unit_model(data, unit: AnalysisUnit) -> tuple[float, int]:

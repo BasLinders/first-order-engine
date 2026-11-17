@@ -1076,6 +1076,71 @@ def test_fit_gamma_recovers_known_shape_and_scale(engine):
     assert math.isfinite(log_lik)
 
 
+@pytest.mark.parametrize("shape", [0.05, 0.4, 1.8, 12.0, 500.0])
+def test_fit_gamma_solves_both_score_equations(shape):
+    """
+    At the exact MLE: k * theta == mean(x), and the profile equation
+    log k - digamma(k) == log(mean(x)) - mean(log(x)) holds to machine precision.
+    """
+    from scipy.special import digamma
+    x = np.random.default_rng(3).gamma(shape, 10.0, 3000)
+    k, theta, log_lik = ContinuousMetricEngine.fit_gamma(x)
+    assert k * theta == pytest.approx(x.mean(), rel=1e-13)
+    s = np.log(x.mean()) - np.log(x).mean()
+    assert np.log(k) - digamma(k) == pytest.approx(s, rel=1e-11)
+    assert log_lik == pytest.approx(
+        -ContinuousMetricEngine.neg_log_likelihood([k, theta], x), rel=1e-14
+    )
+
+
+def test_fit_gamma_is_a_local_maximum():
+    from scipy import stats
+    x = np.random.default_rng(11).gamma(1.7, 40.0, 2500)
+    k, theta, ll = ContinuousMetricEngine.fit_gamma(x)
+    for dk, dt in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]:
+        kk, tt = k * (1 + 1e-5 * dk), theta * (1 + 1e-5 * dt)
+        assert stats.gamma.logpdf(x, a=kk, scale=tt).sum() < ll
+
+
+def test_fit_gamma_never_worse_than_generic_optimiser():
+    """
+    Regression for the previous fit: scipy.optimize.minimize from method-of-
+    moments starts stopped short of the maximum on ~18% of random samples
+    (log-likelihood up to 0.7 low). The exact fit must reach at least as high
+    a log-likelihood on every sample.
+    """
+    from scipy.optimize import minimize
+    rng = np.random.default_rng(1)
+    shortfalls = []
+    for _ in range(150):
+        x = rng.gamma(rng.uniform(0.5, 4), rng.uniform(5, 80), int(rng.integers(200, 3000)))
+        _, _, ll_exact = ContinuousMetricEngine.fit_gamma(x)
+        m, v = x.mean(), x.var(ddof=1)
+        res = minimize(ContinuousMetricEngine.neg_log_likelihood, [m * m / v, v / m],
+                       args=(x,), bounds=((1e-5, None), (1e-5, None)))
+        shortfalls.append(ll_exact - (-res.fun))
+    assert min(shortfalls) > -1e-8          # never worse
+    assert max(shortfalls) > 1e-3           # and the old fit really did fall short
+
+
+def test_fit_gamma_drops_missing_values():
+    x = np.random.default_rng(2).gamma(2.0, 5.0, 500)
+    with_nan = np.r_[x, np.nan, np.nan]
+    assert ContinuousMetricEngine.fit_gamma(with_nan) == ContinuousMetricEngine.fit_gamma(x)
+
+
+@pytest.mark.parametrize("data, match", [
+    ([1.0, 2.0, 0.0], "x > 0"),
+    ([1.0, -2.0, 3.0], "x > 0"),
+    ([4.0, 4.0, 4.0], "equal"),
+    ([4.0], "two observations"),
+    ([np.nan, 3.0], "two observations"),
+])
+def test_fit_gamma_rejects_invalid_input(data, match):
+    with pytest.raises(ValueError, match=match):
+        ContinuousMetricEngine.fit_gamma(data)
+
+
 def test_fit_unit_model_per_transaction_degenerate_returns_nan(engine):
     """Fewer than 2 positive values can't fit a Gamma; returns (nan, 2)."""
     ll, n_params = ContinuousMetricEngine.fit_unit_model([5.0], AnalysisUnit.PER_TRANSACTION)

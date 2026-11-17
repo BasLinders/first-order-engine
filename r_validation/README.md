@@ -40,20 +40,21 @@ Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
 
 ## What the validation turned up
 
-Each of these matters for reading or extending the results. Only the `fit_gamma` precision
-issue is an open problem in FOE itself:
+None of these is a bug in FOE (the one that was, `fit_gamma`'s precision, is fixed), but each
+one matters for reading or extending the results:
 
 - **`run_comparison_suite` with `unit = per_transaction` (the config default) drops zero rows
   before any test**, including the Negative Binomial count test. For "items per order" that is
   correct. For a per-visitor count KPI with real zeros, use `unit = per_visitor`. With the
   default, the NB is fit to positive counts only and gives a different answer (notebook 04, §2).
-- **`ContinuousMetricEngine.fit_gamma` is usually more precise than `MASS::fitdistr`, but not
-  always.** On the notebook's sample it agrees with the exact Gamma MLE to about 1e-5, while
-  `fitdistr` is off by about 0.1% in the shape parameter, so notebook 04 uses the exact MLE as the
-  reference. Across 300 random samples, though, `fit_gamma`'s optimiser stopped short in about
-  18% of cases: the shape was off by up to 1.5% and the log-likelihood fell short by up to 0.7.
-  That is enough to move Gamma LRT p-values. This is a known open issue in FOE, not a tolerance
-  choice.
+- **`ContinuousMetricEngine.fit_gamma` solves the exact Gamma MLE; `MASS::fitdistr` does not.**
+  `fitdistr` is off by about 0.1% in the shape parameter, enough to move Gamma LRT p-values, so
+  notebook 04 uses the exact MLE as the reference. `fit_gamma` used to run a general-purpose
+  optimiser that stopped short of the maximum on about 18% of random samples (shape off by up to
+  1.5%, log-likelihood up to 0.7 low). It now solves the profile equation
+  `log k − ψ(k) = log x̄ − mean(log x)` with Brent's method and matches the R reference to 1e-10.
+  On 200 random two-arm Gamma tests, that moved LRT p-values by up to 0.04 and changed no
+  verdict at α = 0.05.
 - **rstatix's Games-Howell `se` is on the studentized-range scale**, √((s₁²/n₁ + s₂²/n₂) / 2),
   so its `estimate / se` is q, not Welch's t. FOE reports t (= q / √2).
 - **η²_H is clamped to [0, 1]**, as `rstatix::kruskal_effsize` does. The raw formula
