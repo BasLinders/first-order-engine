@@ -16,13 +16,14 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 | [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
 | [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
 | [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight (product prior for 3 arms); per-arm-AOV revenue difference at equal traffic, with mean-AOV uncertainty in closed form (Margrabe) | 47 |
-| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic, NB, Gamma, hurdle), `fit_gamma`, `fit_negbin`, `winsorize_series`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `wilcox.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `msm::deltamethod` | 55 |
+| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic incl. statistics and effect sizes, NB, Gamma, hurdle), native `welch_anova` / `tukey_hsd` / `games_howell` / `dunn_test`, `fit_gamma`, `fit_negbin`, `winsorize_series`, `detect_outliers`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `rstatix::kruskal_effsize`, `wilcox.test`, `TukeyHSD`, `rstatix::games_howell_test`, `dunn.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `rstandard` / `hatvalues` / `dffits`, `msm::deltamethod` | 254 |
 | [05_pretest_planning](05_pretest_planning.ipynb) | `PretestEngine` sample size, power, MDE tables (static and forecast), RPV moments | pre-test analysis, automation | `TrialSize::TwoSampleProportion.Equality`, `power.prop.test`, `TrialSize::TwoSampleMean.Equality`, `pwr::pwr.norm.test`, simulation of the unpooled z-test, root-found CV-constant sample size | 121 |
 | [06_sequential_msprt](06_sequential_msprt.ipynb) | `SequentialEngine` LLR, boundaries, power, `process_test_trajectory` | sequential analysis | numerical integration of the mixture likelihood ratio, `pwr::pwr.norm.test` | 131 |
 | [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
-All 651 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
-FOE at commit `904170a`; notebook 03 re-run after the mean-AOV uncertainty change).
+All 850 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
+FOE at commit `904170a`; notebook 03 re-run after the mean-AOV uncertainty change; notebook 04
+re-run on Windows with R 4.6.1 for the native post-hocs and outlier helpers).
 ### Tolerances
 
 Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
@@ -34,19 +35,29 @@ Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
   observed differences are about 0.1%.
 - **RPV moments** (1%): checked against a simulated sample.
 - **Two-sided MDE** (1e-4 relative): FOE's closed form leaves out the far rejection tail.
+- **Games-Howell adjusted p** (abs 5e-4): `rstatix::games_howell_test` rounds `p.adj` to 3
+  decimals. The unrounded p is also recomputed with `ptukey` and checked to 1e-5 relative.
 
 ## What the validation turned up
 
-None of these is a bug in FOE, but each one matters for reading or extending the results:
+Each of these matters for reading or extending the results. Only the `fit_gamma` precision
+issue is an open problem in FOE itself:
 
 - **`run_comparison_suite` with `unit = per_transaction` (the config default) drops zero rows
   before any test**, including the Negative Binomial count test. For "items per order" that is
   correct. For a per-visitor count KPI with real zeros, use `unit = per_visitor`. With the
   default, the NB is fit to positive counts only and gives a different answer (notebook 04, §2).
-- **`ContinuousMetricEngine.fit_gamma` is more precise than `MASS::fitdistr`.** It agrees with the
-  exact Gamma MLE to about 1e-5, while `fitdistr` is off by about 0.1% in the shape parameter.
-  That is enough to move Gamma LRT p-values noticeably, so notebook 04 uses the exact MLE as the
-  reference.
+- **`ContinuousMetricEngine.fit_gamma` is usually more precise than `MASS::fitdistr`, but not
+  always.** On the notebook's sample it agrees with the exact Gamma MLE to about 1e-5, while
+  `fitdistr` is off by about 0.1% in the shape parameter, so notebook 04 uses the exact MLE as the
+  reference. Across 300 random samples, though, `fit_gamma`'s optimiser stopped short in about
+  18% of cases: the shape was off by up to 1.5% and the log-likelihood fell short by up to 0.7.
+  That is enough to move Gamma LRT p-values. This is a known open issue in FOE, not a tolerance
+  choice.
+- **rstatix's Games-Howell `se` is on the studentized-range scale**, √((s₁²/n₁ + s₂²/n₂) / 2),
+  so its `estimate / se` is q, not Welch's t. FOE reports t (= q / √2).
+- **η²_H is clamped to [0, 1]**, as `rstatix::kruskal_effsize` does. The raw formula
+  (H − k + 1) / (n − k) goes negative when H < k − 1, that is, when there is no effect at all.
 - **Mann-Whitney exact vs asymptotic:** scipy's `method="auto"` switches to the exact test when
   either arm has ≤ 8 rows and there are no ties. R's `wilcox.test` uses a different rule, so the
   R side reproduces scipy's.
@@ -70,6 +81,14 @@ Run these from the repository root.
    pip install -e ".[validation]"
    ```
    `rpy2` finds R through `R_HOME` or `R` on your `PATH`.
+
+**Windows:** with rpy2 3.6.9 and no Rtools, `R CMD config --ldflags` prints nothing (it needs
+`make`), and rpy2 fails with an `IndexError` in `rpy2.situation._get_r_cmd_config` instead of
+falling back to its built-in DLL search. Installing Rtools should avoid it. Without Rtools,
+a `sitecustomize.py` in your virtualenv that turns that `IndexError` into
+`subprocess.CalledProcessError` lets rpy2's fallback run. Also, one-line `%R` magics must
+quote R strings with single quotes: on Windows, IPython strips double quotes from magic
+arguments.
 
 ## Running
 

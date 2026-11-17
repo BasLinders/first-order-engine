@@ -9,6 +9,8 @@ pkgs <- c(
   "car",        # Levene test, type-II ANOVA            (04_continuous)
   "fBasics",    # D'Agostino K^2 omnibus normality test (04_continuous)
   "MASS",       # fitdistr (Gamma MLE), glm.nb          (04, 05)
+  "rstatix",    # Games-Howell, Kruskal-Wallis eta2[H]  (04_continuous)
+  "dunn.test",  # Dunn's post-hoc test                  (04_continuous)
   "TrialSize",  # two-sample z-test sample size         (05_pretest)
   "pwr"         # z-test power / MDE                    (05_pretest)
 )

@@ -1,13 +1,16 @@
+import itertools
 import math
+from dataclasses import dataclass, field
+
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from statsmodels.discrete.discrete_model import NegativeBinomial
-from scipy.stats import normaltest, levene, kruskal, mannwhitneyu
+from scipy.stats import normaltest, levene, kruskal, mannwhitneyu, rankdata
+from scipy.stats import studentized_range
 from scipy.optimize import minimize
 from scipy import stats
-from pingouin import welch_anova
 
 from foe.core.models import (
     AlternativeHypothesis,
@@ -15,10 +18,42 @@ from foe.core.models import (
     ContinuousApproach,
     ContinuousMetricConfig,
     ContinuousMetricResult,
-    GammaPosthocResult,
+    OutlierDetectionResult,
+    PairwiseComparisonResult,
 )
 from foe.core.validators import validate_continuous_data
 from foe.frequentist.confidence import compute_interval_difference
+
+
+@dataclass
+class _PathOutcome:
+    """Internal carrier for what an analysis path produced."""
+
+    test_name: str
+    p_value: float
+    test_statistic: float | None = None
+    test_statistic_name: str | None = None
+    effect_size: float | None = None
+    effect_size_name: str | None = None
+    is_normal: bool | None = None
+    is_homogeneous: bool | None = None
+    normality_stat: float | None = None
+    normality_p: float | None = None
+    levene_stat: float | None = None
+    levene_p: float | None = None
+    posthoc: list[PairwiseComparisonResult] | None = None
+    posthoc_test_name: str | None = None
+    dispersion_alpha: float | None = None
+    variance_mean_ratio: float | None = None
+    extra_warnings: list[str] = field(default_factory=list)
+
+
+def _finite_or_none(x) -> float | None:
+    """float(x) if finite, else None (keeps NaN out of the result model)."""
+    if x is None:
+        return None
+    x = float(x)
+    return x if math.isfinite(x) else None
 
 
 class ContinuousMetricEngine:
@@ -32,14 +67,22 @@ class ContinuousMetricEngine:
                         normality test would report, since count data violates
                         the continuous-data assumptions those tests are built
                         on. Everything else falls through to the normality/
-                        variance decision tree (ANOVA / Welch / Kruskal-Wallis
-                        / Mann-Whitney).
+                        variance decision tree, each branch with its own
+                        post-hoc for 3+ groups:
+                          - normal, equal variance   -> ANOVA        -> Tukey HSD
+                          - normal, unequal variance -> Welch ANOVA  -> Games-Howell
+                          - non-normal, 3+ groups    -> Kruskal-Wallis -> Dunn
+                          - non-normal, 2 groups     -> Mann-Whitney U
       * Gamma family -> likelihood-ratio test on fitted distributions. The
                         analysis unit selects the model:
                           - per_transaction: a two-parameter Gamma per variant.
                           - per_visitor:     a two-part hurdle model per variant
                                              (Bernoulli convert x Gamma spend),
                                              which keeps non-converting zeros.
+
+    Welch's ANOVA and the Tukey / Games-Howell / Dunn post-hocs are
+    implemented natively on numpy + scipy.stats distributions (no pingouin /
+    scikit-posthocs dependency).
 
     The row-level data is a ``pandas.DataFrame``; all settings arrive via a
     frozen ``ContinuousMetricConfig`` and the result is a frozen, JSON-
@@ -78,21 +121,28 @@ class ContinuousMetricEngine:
         )
 
     # ------------------------------------------------------------------ #
-    # Outlier helpers (caller-orchestrated; left intact)
+    # Outlier helpers (caller-orchestrated)
     # ------------------------------------------------------------------ #
 
     @staticmethod
     def detect_outliers_ols(
-        df: pd.DataFrame, kpi: str, threshold: float = 3.0
+        df: pd.DataFrame,
+        kpi: str,
+        threshold: float = 3.0,
+        group_col: str = "experience_variant_label",
     ) -> list[bool]:
         """
         Uses OLS residuals and influence to detect outliers.
         Returns a boolean list (JSON serializable) instead of the model.
+
+        A row is flagged when any of these exceeds its threshold:
+        |internally studentized residual| > threshold, leverage >
+        threshold * p / n, |DFFITS| > threshold * sqrt(p / n).
         """
         if df.empty or len(df[kpi].dropna()) < 3:
             return [False] * len(df)
 
-        model = smf.ols(f"{kpi} ~ C(experience_variant_label)", data=df).fit()
+        model = smf.ols(f"{kpi} ~ C({group_col})", data=df).fit()
         influence = model.get_influence()
 
         std_resid = np.abs(influence.resid_studentized_internal) > threshold
@@ -106,27 +156,287 @@ class ContinuousMetricEngine:
         outlier_mask = std_resid | leverage | dffits
         return outlier_mask.tolist()  # Safe for JSON
 
+    @classmethod
+    def detect_outliers(
+        cls,
+        df: pd.DataFrame,
+        kpi: str,
+        group_col: str = "experience_variant_label",
+        threshold: float = 3.0,
+        exclude_zeros: bool = True,
+        large_n_threshold: int = 10_000,
+    ) -> OutlierDetectionResult:
+        """
+        Flags unusually extreme KPI values, choosing the method by data size.
+
+        Rows considered: KPI not missing and, with ``exclude_zeros``, not zero.
+        Zero rows are non-converting visitors (or not-yet-filtered non-order
+        rows), never outliers; including them would skew the mean/std or the
+        OLS fit that the real outliers are judged against.
+
+        * More than ``large_n_threshold`` considered rows -> per-variant
+          mean +/- threshold * sd (cheap at scale).
+        * Otherwise -> OLS influence (``detect_outliers_ols``) on the
+          considered rows.
+
+        The returned mask is positionally aligned with ``df``; rows not
+        considered are always False.
+        """
+        values = pd.to_numeric(df[kpi], errors="coerce").to_numpy(dtype=float)
+        considered = ~np.isnan(values)
+        if exclude_zeros:
+            considered &= values != 0
+        mask = np.zeros(len(df), dtype=bool)
+        n_considered = int(considered.sum())
+
+        if n_considered == 0:
+            return OutlierDetectionResult(
+                mask=mask.tolist(), method="none", n_considered=0, n_outliers=0
+            )
+
+        sub = df.loc[considered, [group_col]].copy()
+        sub[kpi] = values[considered]
+
+        if n_considered > large_n_threshold:
+            method = "per_variant_sd"
+            sub_mask = np.zeros(n_considered, dtype=bool)
+            for _, idx in sub.groupby(group_col, observed=True).indices.items():
+                v = sub[kpi].to_numpy()[idx]
+                if v.size < 2:
+                    continue
+                mean_v, sd_v = v.mean(), v.std(ddof=1)
+                sub_mask[idx] = (v < mean_v - threshold * sd_v) | (
+                    v > mean_v + threshold * sd_v
+                )
+        else:
+            method = "ols_influence"
+            sub_mask = np.asarray(
+                cls.detect_outliers_ols(
+                    sub.reset_index(drop=True), kpi, threshold, group_col
+                ),
+                dtype=bool,
+            )
+
+        mask[considered] = sub_mask
+        return OutlierDetectionResult(
+            mask=mask.tolist(),
+            method=method,
+            n_considered=n_considered,
+            n_outliers=int(mask.sum()),
+        )
+
     @staticmethod
     def winsorize_series(
-        series: pd.Series, method: str = "Standard Deviation", param: float = 3.0
+        series: pd.Series,
+        method: str = "Standard Deviation",
+        param: float = 3.0,
+        exclude_zeros: bool = False,
     ) -> tuple[list[float], float, float]:
-        """Caps outliers without removing data points."""
-        series_clean = series.dropna()
-        if series_clean.empty:
+        """
+        Caps outliers without removing data points. Returns
+        (capped values, lower cap, upper cap).
+
+        Methods:
+          * "Standard Deviation": mean +/- param * sd.
+          * "Percentile": param is the percent trimmed from *each* tail
+            (param=1 -> 1st and 99th percentiles).
+          * "Central Percentile": param is the central percent *kept*
+            (param=95 -> 2.5th and 97.5th percentiles).
+
+        With ``exclude_zeros``, the caps are computed from the non-zero values
+        only and only non-zero values are capped, so a positive lower cap
+        never lifts a zero (a non-converting visitor) above zero.
+        """
+        series = pd.Series(series)
+        basis_mask = series.notna()
+        if exclude_zeros:
+            basis_mask &= series != 0
+        basis = series[basis_mask]
+        if basis.empty:
             return series.tolist(), 0.0, 0.0
 
         if method == "Standard Deviation":
-            mean_val = series_clean.mean()
-            std_val = series_clean.std()
+            mean_val = basis.mean()
+            std_val = basis.std()
             lower = mean_val - (param * std_val)
             upper = mean_val + (param * std_val)
-        else:  # Percentile (e.g., param=1 means 1st and 99th percentile)
+        elif method == "Central Percentile":
+            if not 0.0 < param <= 100.0:
+                raise ValueError(
+                    "Central Percentile expects the percent of data kept, in (0, 100]."
+                )
+            tail = (100.0 - param) / 2.0
+            lower, upper = np.percentile(basis, [tail, 100.0 - tail])
+        else:  # "Percentile" (e.g., param=1 means 1st and 99th percentile)
             lower_p = param
             upper_p = 100.0 - param
-            lower, upper = np.percentile(series_clean, [lower_p, upper_p])
+            lower, upper = np.percentile(basis, [lower_p, upper_p])
 
-        clipped = series.clip(lower, upper)
+        clipped = series.copy()
+        clipped[basis_mask] = basis.clip(lower, upper)
         return clipped.tolist(), float(lower), float(upper)
+
+    # ------------------------------------------------------------------ #
+    # Native one-way tests and post-hocs
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def welch_anova(groups: list) -> tuple[float, float, float, float]:
+        """
+        Welch's heteroscedastic one-way ANOVA (Welch, 1951).
+
+        Returns (F, df1, df2, p_value). Matches R's
+        ``oneway.test(var.equal = FALSE)``.
+        """
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        k = len(arrs)
+        n = np.array([a.size for a in arrs], dtype=float)
+        if k < 2 or np.any(n < 2):
+            raise ValueError("Welch's ANOVA needs 2+ groups with 2+ rows each.")
+        means = np.array([a.mean() for a in arrs])
+        variances = np.array([a.var(ddof=1) for a in arrs])
+        if np.any(variances <= 0):
+            raise ValueError(
+                "Welch's ANOVA is undefined when a group has zero variance."
+            )
+
+        w = n / variances
+        w_sum = w.sum()
+        weighted_mean = (w * means).sum() / w_sum
+        lam = (((1.0 - w / w_sum) ** 2) / (n - 1.0)).sum()
+
+        numerator = (w * (means - weighted_mean) ** 2).sum() / (k - 1)
+        denominator = 1.0 + 2.0 * (k - 2) / (k ** 2 - 1) * lam
+        f_stat = numerator / denominator
+        df1 = float(k - 1)
+        df2 = float((k ** 2 - 1) / (3.0 * lam))
+        p_value = float(stats.f.sf(f_stat, df1, df2))
+        return float(f_stat), df1, df2, p_value
+
+    @staticmethod
+    def eta_squared(groups: list) -> float:
+        """Between-group sum of squares / total sum of squares (one-way)."""
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        pooled = np.concatenate(arrs)
+        grand = pooled.mean()
+        ss_total = ((pooled - grand) ** 2).sum()
+        ss_between = sum(a.size * (a.mean() - grand) ** 2 for a in arrs)
+        return float(ss_between / ss_total) if ss_total > 0 else float("nan")
+
+    @staticmethod
+    def _pairs(labels: list) -> list[tuple[int, int]]:
+        """(i, j) index pairs with i < j; reported as labels[j] vs labels[i]."""
+        return list(itertools.combinations(range(len(labels)), 2))
+
+    @classmethod
+    def tukey_hsd(
+        cls, labels: list, groups: list, alpha: float = 0.05
+    ) -> list[PairwiseComparisonResult]:
+        """
+        Tukey's HSD (Tukey-Kramer for unequal n) on all pairs, using the
+        pooled within-group variance. Matches R's ``TukeyHSD(aov(...))``.
+        """
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        k = len(arrs)
+        n = np.array([a.size for a in arrs], dtype=float)
+        means = np.array([a.mean() for a in arrs])
+        df_resid = n.sum() - k
+        mse = sum(((a - a.mean()) ** 2).sum() for a in arrs) / df_resid
+        q_crit = float(studentized_range.ppf(1.0 - alpha, k, df_resid))
+
+        results = []
+        for i, j in cls._pairs(labels):
+            diff = means[j] - means[i]
+            se = math.sqrt(mse / 2.0 * (1.0 / n[i] + 1.0 / n[j]))
+            q = abs(diff) / se if se > 0 else float("inf")
+            p = float(np.clip(studentized_range.sf(q, k, df_resid), 0.0, 1.0))
+            results.append(PairwiseComparisonResult(
+                comparison=f"{labels[j]} vs {labels[i]}",
+                group_a=str(labels[j]), group_b=str(labels[i]),
+                statistic=float(q), statistic_name="q",
+                p_value=p, p_adj=p, adjustment="tukey",
+                is_significant=bool(p < alpha),
+                mean_diff=float(diff),
+                ci_low=float(diff - q_crit * se),
+                ci_high=float(diff + q_crit * se),
+            ))
+        return results
+
+    @classmethod
+    def games_howell(
+        cls, labels: list, groups: list, alpha: float = 0.05
+    ) -> list[PairwiseComparisonResult]:
+        """
+        Games-Howell all-pairs comparison: Welch t per pair with Welch-
+        Satterthwaite df, referred to the studentized range distribution.
+        Suited to unequal variances (the post-hoc for Welch's ANOVA).
+        """
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        k = len(arrs)
+        n = np.array([a.size for a in arrs], dtype=float)
+        means = np.array([a.mean() for a in arrs])
+        v_over_n = np.array([a.var(ddof=1) for a in arrs]) / n
+
+        results = []
+        for i, j in cls._pairs(labels):
+            diff = means[j] - means[i]
+            se = math.sqrt(v_over_n[i] + v_over_n[j])
+            df = (v_over_n[i] + v_over_n[j]) ** 2 / (
+                v_over_n[i] ** 2 / (n[i] - 1) + v_over_n[j] ** 2 / (n[j] - 1)
+            )
+            t = diff / se
+            p = float(np.clip(
+                studentized_range.sf(math.sqrt(2.0) * abs(t), k, df), 0.0, 1.0
+            ))
+            crit = float(studentized_range.ppf(1.0 - alpha, k, df)) / math.sqrt(2.0)
+            results.append(PairwiseComparisonResult(
+                comparison=f"{labels[j]} vs {labels[i]}",
+                group_a=str(labels[j]), group_b=str(labels[i]),
+                statistic=float(t), statistic_name="t",
+                p_value=p, p_adj=p, adjustment="games-howell",
+                is_significant=bool(p < alpha),
+                mean_diff=float(diff),
+                ci_low=float(diff - crit * se),
+                ci_high=float(diff + crit * se),
+            ))
+        return results
+
+    @classmethod
+    def dunn_test(
+        cls, labels: list, groups: list, alpha: float = 0.05
+    ) -> list[PairwiseComparisonResult]:
+        """
+        Dunn's (1964) all-pairs test on mean ranks, with the tie correction,
+        Bonferroni-adjusted over k(k-1)/2 comparisons. The post-hoc for
+        Kruskal-Wallis; matches ``dunn.test(method = "bonferroni")`` in R.
+        """
+        arrs = [np.asarray(g, dtype=float) for g in groups]
+        pooled = np.concatenate(arrs)
+        n_total = pooled.size
+        ranks = rankdata(pooled)
+        bounds = np.cumsum([0] + [a.size for a in arrs])
+        mean_ranks = [ranks[bounds[g]:bounds[g + 1]].mean() for g in range(len(arrs))]
+
+        _, tie_counts = np.unique(pooled, return_counts=True)
+        tie_term = ((tie_counts ** 3 - tie_counts).sum()) / (12.0 * (n_total - 1))
+        base_var = n_total * (n_total + 1) / 12.0 - tie_term
+
+        pairs = cls._pairs(labels)
+        m = len(pairs)
+        results = []
+        for i, j in pairs:
+            se = math.sqrt(base_var * (1.0 / arrs[i].size + 1.0 / arrs[j].size))
+            z = (mean_ranks[j] - mean_ranks[i]) / se if se > 0 else 0.0
+            p = float(2.0 * stats.norm.sf(abs(z)))
+            p_adj = float(min(p * m, 1.0))
+            results.append(PairwiseComparisonResult(
+                comparison=f"{labels[j]} vs {labels[i]}",
+                group_a=str(labels[j]), group_b=str(labels[i]),
+                statistic=float(z), statistic_name="z",
+                p_value=p, p_adj=p_adj, adjustment="bonferroni",
+                is_significant=bool(p_adj < alpha),
+            ))
+        return results
 
     # ------------------------------------------------------------------ #
     # Gamma fitting
@@ -205,6 +515,20 @@ class ContinuousMetricEngine:
         return float(ll_gamma), 2
 
     @staticmethod
+    def _lrt_posthoc_result(
+        variant, control_label, lrt_stat: float, p_val: float,
+        num_comparisons: int, alpha: float,
+    ) -> PairwiseComparisonResult:
+        adj_p = float(min(p_val * num_comparisons, 1.0))
+        return PairwiseComparisonResult(
+            comparison=f"{variant} vs {control_label}",
+            group_a=str(variant), group_b=str(control_label),
+            statistic=float(lrt_stat), statistic_name="LR",
+            p_value=float(p_val), p_adj=adj_p, adjustment="bonferroni",
+            is_significant=bool(adj_p < alpha),
+        )
+
+    @staticmethod
     def run_gamma_posthoc(
         df: pd.DataFrame,
         kpi: str,
@@ -212,7 +536,7 @@ class ContinuousMetricEngine:
         control_label: str,
         unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION,
         alpha: float = 0.05,
-    ) -> list[GammaPosthocResult]:
+    ) -> list[PairwiseComparisonResult]:
         """Pairwise LRTs of each treatment against the control, Bonferroni-adjusted.
 
         Uses the same unit-appropriate model as the global test, so the pairwise
@@ -221,7 +545,7 @@ class ContinuousMetricEngine:
         """
         variants = [v for v in df[group_col].unique() if v != control_label]
         num_comparisons = len(variants)
-        posthoc_results: list[GammaPosthocResult] = []
+        posthoc_results: list[PairwiseComparisonResult] = []
 
         for variant in variants:
             pair_df = df[df[group_col].isin([control_label, variant])]
@@ -245,14 +569,9 @@ class ContinuousMetricEngine:
                 lrt_stat = max(2.0 * (alt_ll - null_ll), 0.0)
                 p_val = float(stats.chi2.sf(lrt_stat, df=n_params))
 
-            adj_p = float(min(p_val * num_comparisons, 1.0))
             posthoc_results.append(
-                GammaPosthocResult(
-                    comparison=f"{variant} vs {control_label}",
-                    lrt_stat=float(lrt_stat),
-                    p_value=float(p_val),
-                    p_adj_bonferroni=adj_p,
-                    is_significant=bool(adj_p < alpha),
+                ContinuousMetricEngine._lrt_posthoc_result(
+                    variant, control_label, lrt_stat, p_val, num_comparisons, alpha
                 )
             )
 
@@ -380,11 +699,11 @@ class ContinuousMetricEngine:
         group_col: str,
         control_label: str,
         alpha: float = 0.05,
-    ) -> list[GammaPosthocResult]:
+    ) -> list[PairwiseComparisonResult]:
         """Pairwise Negative Binomial LRTs of each treatment against the control, Bonferroni-adjusted."""
         variants = [v for v in df[group_col].unique() if v != control_label]
         num_comparisons = len(variants)
-        posthoc_results: list[GammaPosthocResult] = []
+        posthoc_results: list[PairwiseComparisonResult] = []
 
         for variant in variants:
             pair_df = df[df[group_col].isin([control_label, variant])]
@@ -393,14 +712,9 @@ class ContinuousMetricEngine:
             except Exception:
                 lrt_stat, p_val = 0.0, 1.0
 
-            adj_p = float(min(p_val * num_comparisons, 1.0))
             posthoc_results.append(
-                GammaPosthocResult(
-                    comparison=f"{variant} vs {control_label}",
-                    lrt_stat=float(lrt_stat),
-                    p_value=float(p_val),
-                    p_adj_bonferroni=adj_p,
-                    is_significant=bool(adj_p < alpha),
+                cls._lrt_posthoc_result(
+                    variant, control_label, lrt_stat, p_val, num_comparisons, alpha
                 )
             )
 
@@ -418,8 +732,9 @@ class ContinuousMetricEngine:
         requested analysis path and return a typed result.
 
         Outlier handling is the caller's responsibility; pass an already
-        winsorized / outlier-removed frame if desired. The unit zero-filter
-        composes on top of whatever frame is supplied.
+        winsorized / outlier-removed frame if desired (see ``detect_outliers``
+        and ``winsorize_series``). The unit zero-filter composes on top of
+        whatever frame is supplied.
         """
         kpi = config.kpi
         group_col = config.group_col
@@ -454,10 +769,9 @@ class ContinuousMetricEngine:
                     "analysis are equivalent for this data."
                 )
 
-        groups = [
-            g[kpi].to_numpy()
-            for _, g in work.groupby(group_col, observed=True)
-        ]
+        grouped = list(work.groupby(group_col, observed=True))
+        labels = [str(name) for name, _ in grouped]
+        groups = [g[kpi].to_numpy() for _, g in grouped]
         num_groups = len(groups)
 
         # Summary statistics (computed on the analysis population).
@@ -468,30 +782,26 @@ class ContinuousMetricEngine:
 
         # 3. Branch once on the approach.
         if approach == ContinuousApproach.GAMMA_GLM:
-            test_name, p_value, posthoc = self._run_gamma_path(
+            outcome = self._run_gamma_path(
                 work, kpi, group_col, groups, num_groups, unit, alpha,
-                config.control_label, warnings,
+                config.control_label,
             )
-            is_normal = None
-            is_homogeneous = None
-            dispersion_alpha = None
         else:
-            (
-                test_name, p_value, is_normal, is_homogeneous, posthoc, dispersion_alpha,
-            ) = self._run_heuristic_path(
-                work, kpi, group_col, groups, num_groups, alpha,
-                config.control_label, warnings,
+            outcome = self._run_heuristic_path(
+                work, kpi, group_col, labels, groups, num_groups, alpha,
+                config.control_label,
                 count_max_unique=config.count_max_unique,
                 count_max_unique_ratio=config.count_max_unique_ratio,
             )
+        warnings.extend(outcome.extra_warnings)
 
-        p_value = float(min(max(p_value, 0.0), 1.0))
+        p_value = float(min(max(outcome.p_value, 0.0), 1.0))
         is_significant = bool(p_value < alpha)
 
         conclusion = self.generate_continuous_conclusion(
             kpi=kpi,
             is_significant=is_significant,
-            test_used=test_name,
+            test_used=outcome.test_name,
             p_value=p_value,
             unit=unit,
         )
@@ -500,44 +810,37 @@ class ContinuousMetricEngine:
             kpi=kpi,
             approach_used=approach,
             unit=unit,
-            test_name=test_name,
+            test_name=outcome.test_name,
             p_value=p_value,
             is_significant=is_significant,
-            is_normal=is_normal,
-            is_homogeneous=is_homogeneous,
+            test_statistic=_finite_or_none(outcome.test_statistic),
+            test_statistic_name=outcome.test_statistic_name,
+            effect_size=_finite_or_none(outcome.effect_size),
+            effect_size_name=outcome.effect_size_name,
+            is_normal=outcome.is_normal,
+            is_homogeneous=outcome.is_homogeneous,
+            normality_stat=_finite_or_none(outcome.normality_stat),
+            normality_p=_finite_or_none(outcome.normality_p),
+            levene_stat=_finite_or_none(outcome.levene_stat),
+            levene_p=_finite_or_none(outcome.levene_p),
             summary_stats=summary_stats,
-            posthoc_results=posthoc,
+            posthoc_results=outcome.posthoc,
+            posthoc_test_name=outcome.posthoc_test_name if outcome.posthoc else None,
             conclusion=conclusion,
             warnings=warnings,
-            dispersion_alpha=dispersion_alpha,
+            dispersion_alpha=outcome.dispersion_alpha,
+            variance_mean_ratio=_finite_or_none(outcome.variance_mean_ratio),
         )
 
     # ------------------------------------------------------------------ #
     # Path implementations
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _pingouin_col(frame: pd.DataFrame, *candidates: str) -> str:
-        """
-        Return the first of ``candidates`` present in a pingouin result frame.
-
-        pingouin 0.6 renamed its output columns to snake_case (e.g. "p-unc" ->
-        "p_unc"), and the dependency floor still admits 0.5.x, so callers pass
-        every known spelling, newest first.
-        """
-        for name in candidates:
-            if name in frame.columns:
-                return name
-        raise KeyError(
-            f"None of the columns {list(candidates)} are in the pingouin result "
-            f"(got {list(frame.columns)}); the installed pingouin version may "
-            "have renamed them again."
-        )
-
     def _run_gamma_path(
         self, work, kpi, group_col, groups, num_groups, unit, alpha,
-        control_label, warnings,
-    ) -> tuple[str, float, list[GammaPosthocResult] | None]:
+        control_label,
+    ) -> _PathOutcome:
+        test_name = self._gamma_test_name(unit)
         ll_null, n_params = self.fit_unit_model(work[kpi], unit)
         ll_alt = 0.0
         for grp in groups:
@@ -546,29 +849,39 @@ class ContinuousMetricEngine:
 
         if np.isnan(ll_null) or np.isnan(ll_alt):
             # Validation should prevent this; treat as "no detectable difference".
-            warnings.append(
-                "The likelihood model could not be fit on all groups; the global "
-                "test was treated as non-significant."
+            return _PathOutcome(
+                test_name=test_name, p_value=1.0,
+                extra_warnings=[
+                    "The likelihood model could not be fit on all groups; the global "
+                    "test was treated as non-significant."
+                ],
             )
-            return self._gamma_test_name(unit), 1.0, None
 
         df_diff = n_params * (num_groups - 1)
         lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
         p_value = float(stats.chi2.sf(lr_stat, df=df_diff))
+        outcome = _PathOutcome(
+            test_name=test_name, p_value=p_value,
+            test_statistic=lr_stat, test_statistic_name="LR",
+        )
 
-        posthoc = None
         if p_value < alpha and num_groups > 2:
             if control_label:
-                posthoc = self.run_gamma_posthoc(
+                outcome.posthoc = self.run_gamma_posthoc(
                     work, kpi, group_col, control_label, unit, alpha
                 )
+                outcome.posthoc_test_name = (
+                    "Two-part hurdle LRT vs control (Bonferroni)"
+                    if unit == AnalysisUnit.PER_VISITOR
+                    else "Gamma LRT vs control (Bonferroni)"
+                )
             else:
-                warnings.append(
+                outcome.extra_warnings.append(
                     "Global Gamma test is significant with 3+ groups, but no "
                     "control_label was provided for post-hoc comparisons."
                 )
 
-        return self._gamma_test_name(unit), p_value, posthoc
+        return outcome
 
     @staticmethod
     def _gamma_test_name(unit: AnalysisUnit) -> str:
@@ -579,11 +892,11 @@ class ContinuousMetricEngine:
         )
 
     def _run_heuristic_path(
-        self, work, kpi, group_col, groups, num_groups, alpha,
-        control_label, warnings,
+        self, work, kpi, group_col, labels, groups, num_groups, alpha,
+        control_label,
         count_max_unique: int = 50,
         count_max_unique_ratio: float = 0.05,
-    ) -> tuple[str, float, bool | None, bool | None, list[GammaPosthocResult] | None, float | None]:
+    ) -> _PathOutcome:
         # Count-data gate runs first: a discrete, non-negative count KPI
         # (e.g. items/tickets per buyer) violates the continuous-data
         # assumptions the normality/variance tree below is built on, no
@@ -593,10 +906,9 @@ class ContinuousMetricEngine:
             max_unique_for_check=count_max_unique,
             max_unique_ratio=count_max_unique_ratio,
         ):
-            test_name, p_value, posthoc, dispersion_alpha = self._run_negbin_path(
-                work, kpi, group_col, num_groups, alpha, control_label, warnings,
+            return self._run_negbin_path(
+                work, kpi, group_col, num_groups, alpha, control_label,
             )
-            return test_name, p_value, None, None, posthoc, dispersion_alpha
 
         model = smf.ols(f"{kpi} ~ C({group_col})", data=work).fit()
 
@@ -605,63 +917,124 @@ class ContinuousMetricEngine:
         # full residual vector is used. The kurtosis component needs N >= 20;
         # below that, fall back to non-parametric handling.
         resid = model.resid.dropna()
+        normality_stat = normality_p = None
         if len(resid) >= 20:
-            _, p_norm = normaltest(resid)
-            is_normal = bool(p_norm >= 0.05)
+            normality_stat, normality_p = (float(x) for x in normaltest(resid))
+            is_normal = bool(normality_p >= 0.05)
         else:
             is_normal = False
 
         # Homogeneity of variance.
-        _, p_var = levene(*groups)
-        is_homogeneous = bool(p_var >= 0.05)
+        levene_stat, levene_p = (float(x) for x in levene(*groups))
+        is_homogeneous = bool(levene_p >= 0.05)
+
+        outcome = _PathOutcome(
+            test_name="", p_value=1.0,
+            is_normal=is_normal, is_homogeneous=is_homogeneous,
+            normality_stat=normality_stat, normality_p=normality_p,
+            levene_stat=levene_stat, levene_p=levene_p,
+        )
+        posthoc_fn = posthoc_name = None
 
         if is_normal and is_homogeneous:
             anova_results = sm.stats.anova_lm(model, typ=2)
-            return (
-                "Standard ANOVA", float(anova_results["PR(>F)"].iloc[0]),
-                is_normal, is_homogeneous, None, None,
-            )
+            ss_between = float(anova_results["sum_sq"].iloc[0])
+            ss_resid = float(anova_results["sum_sq"].iloc[1])
+            outcome.test_name = "Standard ANOVA"
+            outcome.p_value = float(anova_results["PR(>F)"].iloc[0])
+            outcome.test_statistic = float(anova_results["F"].iloc[0])
+            outcome.test_statistic_name = "F"
+            outcome.effect_size = ss_between / (ss_between + ss_resid)
+            outcome.effect_size_name = "eta_squared"
+            posthoc_fn, posthoc_name = self.tukey_hsd, "Tukey HSD"
 
-        if is_normal and not is_homogeneous:
-            aov = welch_anova(data=work, dv=kpi, between=group_col)
-            p_col = self._pingouin_col(aov, "p_unc", "p-unc")
-            return (
-                "Welch's ANOVA", float(aov[p_col].iloc[0]),
-                is_normal, is_homogeneous, None, None,
-            )
+        elif is_normal:
+            f_stat, _, _, p = self.welch_anova(groups)
+            outcome.test_name = "Welch's ANOVA"
+            outcome.p_value = p
+            outcome.test_statistic = f_stat
+            outcome.test_statistic_name = "F"
+            outcome.effect_size = self.eta_squared(groups)
+            outcome.effect_size_name = "partial_eta_squared"
+            posthoc_fn, posthoc_name = self.games_howell, "Games-Howell"
 
-        # Non-normal -> non-parametric.
-        if num_groups > 2:
-            _, p = kruskal(*groups)
-            return "Kruskal-Wallis", float(p), is_normal, is_homogeneous, None, None
+        elif num_groups > 2:
+            # Non-normal -> non-parametric.
+            h_stat, p = kruskal(*groups)
+            n_total = sum(len(g) for g in groups)
+            outcome.test_name = "Kruskal-Wallis"
+            outcome.p_value = float(p)
+            outcome.test_statistic = float(h_stat)
+            outcome.test_statistic_name = "H"
+            if n_total > num_groups:
+                # Clamped to [0, 1] like rstatix::kruskal_effsize: the raw
+                # formula dips below 0 when H < k - 1 (no effect at all).
+                eta_h = (h_stat - num_groups + 1) / (n_total - num_groups)
+                outcome.effect_size = float(min(max(eta_h, 0.0), 1.0))
+                outcome.effect_size_name = "eta_squared_h"
+            posthoc_fn, posthoc_name = self.dunn_test, "Dunn (Bonferroni)"
 
-        _, p = mannwhitneyu(groups[0], groups[1], alternative="two-sided")
-        return "Mann-Whitney U", float(p), is_normal, is_homogeneous, None, None
+        else:
+            u_stat, p = mannwhitneyu(groups[0], groups[1], alternative="two-sided")
+            outcome.test_name = "Mann-Whitney U"
+            outcome.p_value = float(p)
+            outcome.test_statistic = float(u_stat)
+            outcome.test_statistic_name = "U"
+            outcome.effect_size = 1.0 - 2.0 * u_stat / (len(groups[0]) * len(groups[1]))
+            outcome.effect_size_name = "rank_biserial"
+
+        if posthoc_fn is not None and outcome.p_value < alpha and num_groups > 2:
+            try:
+                outcome.posthoc = posthoc_fn(labels, groups, alpha)
+                outcome.posthoc_test_name = posthoc_name
+            except Exception as exc:  # keep the global result usable
+                outcome.extra_warnings.append(
+                    f"The {posthoc_name} post-hoc could not be computed: {exc}"
+                )
+
+        return outcome
 
     def _run_negbin_path(
-        self, work, kpi, group_col, num_groups, alpha, control_label, warnings,
-    ) -> tuple[str, float, list[GammaPosthocResult] | None, float | None]:
+        self, work, kpi, group_col, num_groups, alpha, control_label,
+    ) -> _PathOutcome:
         test_name = "Negative Binomial Regression (LRT)"
+        mean_val = float(work[kpi].mean())
+        var_mean_ratio = float(work[kpi].var()) / mean_val if mean_val > 0 else None
         try:
-            p_value, _, dispersion_alpha = self._run_negbin_lrt(work, kpi, group_col)
-        except Exception:
-            warnings.append(
-                "The Negative Binomial model could not be fit on all groups; "
-                "the global test was treated as non-significant."
+            p_value, lr_stat, dispersion_alpha = self._run_negbin_lrt(
+                work, kpi, group_col
             )
-            return test_name, 1.0, None, None
+        except Exception:
+            return _PathOutcome(
+                test_name=test_name, p_value=1.0,
+                variance_mean_ratio=var_mean_ratio,
+                extra_warnings=[
+                    "The Negative Binomial model could not be fit on all groups; "
+                    "the global test was treated as non-significant."
+                ],
+            )
 
-        posthoc = None
+        outcome = _PathOutcome(
+            test_name=test_name, p_value=p_value,
+            test_statistic=lr_stat, test_statistic_name="LR",
+            dispersion_alpha=dispersion_alpha,
+            variance_mean_ratio=var_mean_ratio,
+        )
         if p_value < alpha and num_groups > 2:
             if control_label:
-                posthoc = self.run_negbin_posthoc(work, kpi, group_col, control_label, alpha)
+                outcome.posthoc = self.run_negbin_posthoc(
+                    work, kpi, group_col, control_label, alpha
+                )
+                outcome.posthoc_test_name = (
+                    "Negative Binomial LRT vs control (Bonferroni)"
+                )
             else:
-                warnings.append(
+                outcome.extra_warnings.append(
                     "Global Negative Binomial test is significant with 3+ groups, "
                     "but no control_label was provided for post-hoc comparisons."
                 )
 
-        return test_name, p_value, posthoc, dispersion_alpha
+        return outcome
 
     # ------------------------------------------------------------------ #
     # Business case (user-level monetary projection)

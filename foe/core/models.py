@@ -329,23 +329,81 @@ class ContinuousMetricConfig(BaseModel):
     )
 
 
-class GammaPosthocResult(BaseModel):
+class PairwiseComparisonResult(BaseModel):
     """
-    A single pairwise LRT comparison against the control.
+    One pairwise post-hoc comparison, "group_a vs group_b".
 
-    Shared by both the Gamma/two-part path and the Negative Binomial path --
-    the two are structurally identical (a likelihood ratio test statistic,
-    its p-value, and a Bonferroni-adjusted p-value), so no separate model is
-    needed for the count-data case.
+    Shared by every post-hoc the continuous engine runs:
+
+    * LRT vs control (Gamma, two-part hurdle, Negative Binomial): group_a is
+      the treatment, group_b the control, Bonferroni-adjusted.
+    * All-pairs after the heuristic global test: Tukey HSD (after standard
+      ANOVA), Games-Howell (after Welch's ANOVA), Dunn (after Kruskal-Wallis,
+      Bonferroni-adjusted). group_a is the later label in sort order, group_b
+      the earlier one (R's ``TukeyHSD`` "B-A" convention).
+
+    ``mean_diff`` is always mean(group_a) - mean(group_b), and ``ci_low`` /
+    ``ci_high`` are the family-wise interval on it. Both are populated for
+    Tukey and Games-Howell only.
+
+    ``p_value`` is the unadjusted pairwise p-value where the method has one
+    (LRT, Dunn). Tukey and Games-Howell adjust through the studentized range
+    distribution itself and have no separate unadjusted p-value, so for those
+    ``p_value == p_adj``.
     """
 
     model_config = ConfigDict(frozen=True)
 
     comparison: str
-    lrt_stat: float
+    group_a: str
+    group_b: str
+    statistic: float
+    statistic_name: str  # "LR", "q", "t" or "z"
     p_value: float = Field(..., ge=0.0, le=1.0)
-    p_adj_bonferroni: float = Field(..., ge=0.0, le=1.0)
+    p_adj: float = Field(..., ge=0.0, le=1.0)
+    adjustment: str  # "bonferroni", "tukey" or "games-howell"
     is_significant: bool
+    mean_diff: Optional[float] = None
+    ci_low: Optional[float] = None
+    ci_high: Optional[float] = None
+
+    # --- Deprecated aliases (pre-PairwiseComparisonResult field names) ---
+
+    @property
+    def lrt_stat(self) -> float:
+        """Deprecated: use ``statistic``."""
+        return self.statistic
+
+    @property
+    def p_adj_bonferroni(self) -> float:
+        """Deprecated: use ``p_adj`` (and check ``adjustment``)."""
+        if self.adjustment != "bonferroni":
+            raise AttributeError(
+                f"p_adj_bonferroni is undefined for a {self.adjustment!r}-adjusted "
+                "comparison; use p_adj."
+            )
+        return self.p_adj
+
+
+# Deprecated alias: the LRT post-hocs used to return GammaPosthocResult.
+GammaPosthocResult = PairwiseComparisonResult
+
+
+class OutlierDetectionResult(BaseModel):
+    """
+    Output of ``ContinuousMetricEngine.detect_outliers``.
+
+    ``mask`` is positionally aligned with the input frame's rows. Rows that
+    were not considered (missing KPI, or zero with ``exclude_zeros``) are
+    always False.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mask: List[bool]
+    method: str  # "ols_influence", "per_variant_sd" or "none"
+    n_considered: int
+    n_outliers: int
 
 
 class ContinuousMetricResult(BaseModel):
@@ -362,16 +420,38 @@ class ContinuousMetricResult(BaseModel):
     test_name: str
     p_value: float = Field(..., ge=0.0, le=1.0)
     is_significant: bool
+    # Global test statistic: "F" (ANOVA, Welch), "H" (Kruskal-Wallis),
+    # "U" (Mann-Whitney, for the first group in sort order) or "LR" (Gamma,
+    # hurdle, Negative Binomial). None when the model could not be fit.
+    test_statistic: Optional[float] = None
+    test_statistic_name: Optional[str] = None
+    # Heuristic path only: "eta_squared" (standard ANOVA), "partial_eta_squared"
+    # (Welch; equals eta squared in a one-way design), "eta_squared_h"
+    # (Kruskal-Wallis, (H - k + 1) / (n - k) clamped to [0, 1]) or "rank_biserial" (Mann-Whitney: 1 - 2U / (n1 * n2),
+    # positive when the second group in sort order tends to be larger).
+    effect_size: Optional[float] = None
+    effect_size_name: Optional[str] = None
     # Diagnostics are only populated for the normality/variance heuristic
     # branch; None under Gamma and under the Negative Binomial count-data path.
     is_normal: Optional[bool] = None
     is_homogeneous: Optional[bool] = None
+    # D'Agostino K^2 on the OLS residuals (None below 20 residuals) and
+    # Levene (median-centred).
+    normality_stat: Optional[float] = None
+    normality_p: Optional[float] = None
+    levene_stat: Optional[float] = None
+    levene_p: Optional[float] = None
     summary_stats: List[Dict[str, Any]] = Field(default_factory=list)
-    posthoc_results: Optional[List[GammaPosthocResult]] = None
+    posthoc_results: Optional[List[PairwiseComparisonResult]] = None
+    # Human-readable name of the post-hoc that produced posthoc_results.
+    posthoc_test_name: Optional[str] = None
     conclusion: str = ""
     # Negative-Binomial dispersion parameter (alpha); populated only when the
     # heuristic path's count-data gate routes to Negative Binomial regression.
     dispersion_alpha: Optional[float] = None
+    # Variance / mean of the KPI; Negative Binomial path only (> 1 indicates
+    # overdispersion relative to Poisson).
+    variance_mean_ratio: Optional[float] = None
     # Non-fatal interpretive notices (e.g. dropped zero rows, no zeros found).
     warnings: List[str] = Field(default_factory=list)
 
