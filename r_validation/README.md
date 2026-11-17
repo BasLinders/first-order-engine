@@ -16,14 +16,16 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 | [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant` | experiment analysis, small-sample z-test fallback, automation | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod` | 168 |
 | [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
 | [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight (product prior for 3 arms); per-arm-AOV revenue difference at equal traffic, with mean-AOV uncertainty in closed form (Margrabe) | 47 |
-| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic incl. statistics and effect sizes, NB, Gamma, hurdle), native `welch_anova` / `tukey_hsd` / `games_howell` / `dunn_test`, `fit_gamma`, `fit_negbin`, `winsorize_series`, `detect_outliers`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `rstatix::kruskal_effsize`, `wilcox.test`, `TukeyHSD`, `rstatix::games_howell_test`, `dunn.test`, `MASS::glm.nb`, `MASS::fitdistr`, exact Gamma MLE, `rstandard` / `hatvalues` / `dffits`, `msm::deltamethod` | 254 |
+| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic incl. statistics and effect sizes, NB, Gamma, hurdle), native `welch_anova` / `tukey_hsd` / `games_howell` / `dunn_test`, `fit_gamma`, `fit_negbin`, `winsorize_series`, `detect_outliers`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `rstatix::kruskal_effsize`, `wilcox.test`, `TukeyHSD`, `rstatix::games_howell_test`, `dunn.test`, `MASS::glm.nb`, Poisson GLM LRT (underdispersed counts), `MASS::fitdistr`, exact Gamma MLE, `rstandard` / `hatvalues` / `dffits`, `msm::deltamethod` | 271 |
 | [05_pretest_planning](05_pretest_planning.ipynb) | `PretestEngine` sample size, power, MDE tables (static and forecast), RPV moments | pre-test analysis, automation | `TrialSize::TwoSampleProportion.Equality`, `power.prop.test`, `TrialSize::TwoSampleMean.Equality`, `pwr::pwr.norm.test`, simulation of the unpooled z-test, root-found CV-constant sample size | 121 |
 | [06_sequential_msprt](06_sequential_msprt.ipynb) | `SequentialEngine` LLR, boundaries, power, `process_test_trajectory` | sequential analysis | numerical integration of the mixture likelihood ratio, `pwr::pwr.norm.test` | 131 |
 | [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
-All 850 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
+All 867 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
 FOE at commit `904170a`; notebook 03 re-run after the mean-AOV uncertainty change; notebook 04
-re-run on Windows with R 4.6.1 for the native post-hocs and outlier helpers).
+re-run on Windows with R 4.6.1 for the native post-hocs and outlier helpers, and again (R 4.6.1,
+scipy 1.18.1, statsmodels 0.15.0) for the underdispersed NB case).
+
 ### Tolerances
 
 Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
@@ -37,11 +39,20 @@ Most checks agree to 1e-6 relative or better. The looser ones are deliberate:
 - **Two-sided MDE** (1e-4 relative): FOE's closed form leaves out the far rejection tail.
 - **Games-Howell adjusted p** (abs 5e-4): `rstatix::games_howell_test` rounds `p.adj` to 3
   decimals. The unrounded p is also recomputed with `ptukey` and checked to 1e-5 relative.
+- **NB LR on underdispersed counts vs `glm.nb`** (1e-3 relative): `glm.nb` stops at its iteration
+  limit with θ ≈ 7×10⁴ instead of ∞. The tight reference there is the Poisson GLM LRT (1e-5).
 
 ## What the validation turned up
 
-None of these is a bug in FOE (the one that was, `fit_gamma`'s precision, is fixed), but each
-one matters for reading or extending the results:
+None of these is a bug in FOE (the ones that were, `fit_gamma`'s precision and the NB test on
+underdispersed counts, are fixed), but each one matters for reading or extending the results:
+
+- **Underdispersed counts put the NB fit at the Poisson boundary.** Items per order (always ≥ 1)
+  usually has variance below its mean. NB2's α then goes to its lower bound, and statsmodels
+  returns NaN standard errors because the Hessian is singular in α alone. FOE used to read that
+  as an unfittable model and report p = 1. It now checks identification on a Poisson fit with
+  the same design, reports `dispersion_alpha = 0.0`, and matches the Poisson GLM LRT
+  (notebook 04, §2b). `MASS::glm.nb` warns "iteration limit reached" on the same data.
 
 - **`run_comparison_suite` with `unit = per_transaction` (the config default) drops zero rows
   before any test**, including the Negative Binomial count test. For "items per order" that is

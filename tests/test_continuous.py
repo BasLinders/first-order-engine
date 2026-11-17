@@ -1252,6 +1252,100 @@ def test_negbin_posthoc_unfittable_pair_reports_non_significant(engine):
     assert results[0].is_significant is False
 
 
+def _poisson_glm_lrt(df: pd.DataFrame, kpi: str) -> tuple[float, float]:
+    """Independent reference: Poisson GLM LRT of y ~ variant against y ~ 1."""
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+    from scipy import stats
+
+    d = df.rename(columns={kpi: "y", GROUP_COL: "g"})
+    alt = smf.glm("y ~ C(g)", d, family=sm.families.Poisson()).fit()
+    null = smf.glm("y ~ 1", d, family=sm.families.Poisson()).fit()
+    lr = 2.0 * (alt.llf - null.llf)
+    return float(lr), float(stats.chi2.sf(lr, df=alt.df_model))
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_negbin_underdispersed_counts_fit_at_poisson_boundary(engine):
+    """
+    Items per order (always >= 1, variance < mean) pushes the NB2 alpha to its
+    lower bound, where statsmodels returns NaN standard errors. That is not
+    separation: the LRT must still run, match a Poisson GLM LRT, and raise no
+    "could not be fit" warning.
+    """
+    rng = np.random.default_rng(42)
+    df = pd.DataFrame({
+        GROUP_COL: ["Control"] * 500 + ["B"] * 500,
+        "total_item_quantity": np.concatenate(
+            [1 + rng.poisson(0.5, 500), 1 + rng.poisson(0.8, 500)]
+        ),
+    })
+    y = df["total_item_quantity"]
+    assert y.var() / y.mean() < 1  # the scenario under test
+
+    result = engine.run_comparison_suite(
+        df, ContinuousMetricConfig(kpi="total_item_quantity", unit=AnalysisUnit.PER_TRANSACTION)
+    )
+    ref_lr, ref_p = _poisson_glm_lrt(df, "total_item_quantity")
+
+    assert result.test_name == "Negative Binomial Regression (LRT)"
+    assert not any("could not be fit" in w for w in result.warnings)
+    assert result.is_significant is True
+    assert result.p_value < 0.05
+    assert result.test_statistic == pytest.approx(ref_lr, rel=1e-5)
+    assert result.p_value == pytest.approx(ref_p, rel=1e-4)
+    assert result.dispersion_alpha == 0.0
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_negbin_posthoc_underdispersed_three_variants(engine):
+    """Pairwise NB LRTs on underdispersed counts give finite p-values; a real lift is significant."""
+    rng = np.random.default_rng(3)
+    n = 500
+    df = make_df({
+        "Control": 1 + rng.poisson(0.5, n),
+        "Same": 1 + rng.poisson(0.5, n),
+        "Lift": 1 + rng.poisson(0.9, n),
+    }, kpi="items")
+
+    results = {
+        r.comparison: r
+        for r in ContinuousMetricEngine.run_negbin_posthoc(df, "items", GROUP_COL, "Control")
+    }
+    assert set(results) == {"Same vs Control", "Lift vs Control"}
+    for r in results.values():
+        assert math.isfinite(r.p_value)
+        assert 0.0 <= r.p_value <= 1.0
+    assert results["Lift vs Control"].is_significant is True
+    assert results["Lift vs Control"].p_value < 1e-3
+
+    # The global test routes through the same LRT and then the posthoc.
+    result = engine.run_comparison_suite(
+        df,
+        ContinuousMetricConfig(kpi="items", unit=AnalysisUnit.PER_TRANSACTION, control_label="Control"),
+    )
+    assert result.is_significant is True
+    assert not any("could not be fit" in w for w in result.warnings)
+    assert result.posthoc_results is not None
+
+
+@pytest.mark.filterwarnings("ignore")
+def test_negbin_equidispersed_null_not_significant(engine):
+    """Poisson counts with no lift: not significant, and no "could not be fit" warning."""
+    rng = np.random.default_rng(11)
+    n = 500
+    df = make_df({
+        "Control": rng.poisson(2.0, n).astype(float),
+        "B": rng.poisson(2.0, n).astype(float),
+    }, kpi="items")
+    result = engine.run_comparison_suite(
+        df, ContinuousMetricConfig(kpi="items", unit=AnalysisUnit.PER_VISITOR)
+    )
+    assert result.test_name == "Negative Binomial Regression (LRT)"
+    assert result.is_significant is False
+    assert not any("could not be fit" in w for w in result.warnings)
+
+
 # --------------------------------------------------------------------- #
 #  estimate_monetary_impact_per_variant
 # --------------------------------------------------------------------- #

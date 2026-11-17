@@ -26,6 +26,13 @@ from foe.core.validators import validate_continuous_data
 from foe.frequentist.confidence import compute_interval_difference
 
 
+# NB2 dispersion at or below this is treated as "at the lower bound", i.e. the
+# counts are equi- or underdispersed and the fit has collapsed onto Poisson.
+# In NB2, Var = mu + alpha * mu^2, so alpha = 1e-4 adds 1% to the variance only
+# once mu = 100 -- far above the range of a count KPI.
+NB_ALPHA_LOWER_BOUND = 1e-4
+
+
 @dataclass
 class _PathOutcome:
     """Internal carrier for what an analysis path produced."""
@@ -701,10 +708,28 @@ class ContinuousMetricEngine:
         # unlike checking the log-likelihood's finiteness alone. Both checks are kept: either
         # is grounds to treat this the same as any other unfittable model (p=1.0, with a
         # warning) rather than letting a nan or a spurious near-zero p_value leak out.
+        #
+        # One NaN-bse case is harmless: equi-/underdispersed counts (variance <= mean, e.g.
+        # items per order, always >= 1) push alpha to its lower bound. The Hessian is then
+        # singular in alpha alone, so bse is NaN although the fit is fine -- NB2 with
+        # alpha -> 0 is Poisson, and the log-likelihoods and LR statistic are valid. For
+        # that case identification of the regression coefficients is checked on a Poisson
+        # fit with the same design; separation still shows up there as NaN bse.
+        def _identified(res, exog) -> bool:
+            if np.all(np.isfinite(res.bse)):
+                return True
+            if not float(res.params[-1]) <= NB_ALPHA_LOWER_BOUND:
+                return False
+            try:
+                pois = sm.Poisson(data, exog).fit(disp=0, maxiter=200)
+            except Exception:
+                return False
+            return bool(np.isfinite(pois.llf) and np.all(np.isfinite(pois.bse)))
+
         if (
             not (np.isfinite(ll_null) and np.isfinite(ll_alt))
-            or not np.all(np.isfinite(res_null.bse))
-            or not np.all(np.isfinite(res_alt.bse))
+            or not _identified(res_null, exog_null)
+            or not _identified(res_alt, exog_alt)
         ):
             raise ValueError(
                 "Negative Binomial model did not converge to a well-identified fit -- "
@@ -712,9 +737,14 @@ class ContinuousMetricEngine:
                 "(a common symptom of quasi/complete separation in a tiny or degenerate sample)."
             )
 
+        # At the lower bound the fitted alpha (~1e-5..1e-7) is optimizer noise; report
+        # the limit it stands for (0.0, i.e. Poisson).
+        if alpha_alt <= NB_ALPHA_LOWER_BOUND:
+            alpha_alt = 0.0
+
         df_diff = exog_alt.shape[1] - exog_null.shape[1]
         if df_diff <= 0:
-            return 1.0, 0.0, alpha_alt
+            return 1.0, 0.0, float(alpha_alt)
 
         lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
         p_value = float(stats.chi2.sf(lr_stat, df=df_diff))

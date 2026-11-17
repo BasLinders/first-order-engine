@@ -448,6 +448,8 @@ class ContinuousMetricResult(BaseModel):
     conclusion: str = ""
     # Negative-Binomial dispersion parameter (alpha); populated only when the
     # heuristic path's count-data gate routes to Negative Binomial regression.
+    # 0.0 when the counts are equi-/underdispersed and the fit sits at the
+    # Poisson boundary (alpha -> 0).
     dispersion_alpha: Optional[float] = None
     # Variance / mean of the KPI; Negative Binomial path only (> 1 indicates
     # overdispersion relative to Poisson).
