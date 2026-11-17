@@ -51,6 +51,17 @@ class PretestEngine:
 
         week_2_mde = results[1]["MDE"]
         week_6_mde = results[5]["MDE"]
+        if week_6_mde is None:
+            return (
+                "Sensitivity Projection: even 6 weeks of volume is too little to reach "
+                "the target power for any lift at this variance."
+            )
+        if week_2_mde is None:
+            return (
+                "Sensitivity Projection: 2 weeks of volume is too little to reach the "
+                "target power for any lift at this variance. Running for 6 weeks allows "
+                f"you to detect an effect as small as {week_6_mde:.2f}%."
+            )
 
         return (
             f"Sensitivity Projection: Running this test for 2 weeks allows you to detect a "
@@ -115,11 +126,64 @@ class PretestEngine:
 
     @staticmethod
     def _relative_mde(
-        mean: float, variance: float, n_per_variant: float, z_alpha: float, z_power: float
-    ) -> float:
-        """Relative MDE (%) for a two-sample test of means with per-unit `variance`."""
+        mean: float,
+        variance: float,
+        n_per_variant: float,
+        z_alpha: float,
+        z_power: float,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
+    ) -> Optional[float]:
+        """
+        Relative MDE (%) for a two-sample test of means with control variance
+        `variance`; the exact inverse of ``calculate_fixed_sample_size_continuous``.
+
+        EQUAL: both groups share `variance`, so
+            MDE = (z_alpha + z_power) * sqrt(2 * variance / n) / mean.
+
+        CV_CONSTANT: the treatment variance is ``variance * (1 + m)**2`` and
+        grows with the lift m being solved for. With ``K = (z_alpha +
+        z_power)**2`` and ``r = K * variance / (mean**2 * n)``, the sample-size
+        condition ``m**2 = r * (1 + (1 + m)**2)`` has the positive root
+
+            m = (r + sqrt(2r - r**2)) / (1 - r)
+
+        which needs r < 1 (n > K * CV**2). Below that, no finite lift reaches
+        the target power and None is returned.
+        """
+        if variance_scaling == VarianceScaling.CV_CONSTANT:
+            r = (z_alpha + z_power) ** 2 * variance / (mean**2 * n_per_variant)
+            if r >= 1:
+                return None
+            return float((r + np.sqrt(2 * r - r**2)) / (1 - r) * 100)
         se = np.sqrt(2 * variance / n_per_variant)
         return float((z_alpha + z_power) * se / mean * 100)
+
+    @staticmethod
+    def _relative_mde_binomial(
+        baseline_rate: float, n_per_variant: float, z_alpha: float, z_power: float
+    ) -> float:
+        """
+        Relative MDE (%) for a binomial KPI under ``run_synthesis``'s unpooled
+        z-test: the lift whose required sample size
+        ``(z_alpha + z_power)**2 * (p1*q1 + p2*q2) / delta**2`` equals
+        `n_per_variant`, so it is the exact inverse of
+        ``calculate_fixed_sample_size``.
+
+        The treatment variance depends on the lift being solved for. With
+        ``p2 = p + delta`` we have ``p2*q2 = p*q + delta*(1 - 2p) - delta**2``,
+        so with ``K = (z_alpha + z_power)**2`` the condition is the quadratic
+
+            (n + K) * delta**2 - K * (1 - 2p) * delta - 2 * K * p * q = 0
+
+        whose positive root is the absolute MDE. That root stays below 1 - p
+        (so p2 <= 1) whenever n > K * p / (1 - p).
+        """
+        p = baseline_rate
+        n = n_per_variant
+        k = (z_alpha + z_power) ** 2
+        b = k * (1 - 2 * p)
+        delta = (b + np.sqrt(b**2 + 8 * k * p * (1 - p) * (n + k))) / (2 * (n + k))
+        return float(delta / p * 100)
 
     @staticmethod
     def _sample_size_per_variant(
@@ -201,7 +265,10 @@ class PretestEngine:
     ) -> Dict[str, Any]:
         """Calculates a 6-week MDE projection for a binomial KPI (static traffic).
 
-        `baseline_visitors` is total weekly traffic across all variants.
+        `baseline_visitors` is total weekly traffic across all variants. Each
+        week's MDE is the exact inverse of ``calculate_fixed_sample_size``
+        (unpooled variance, matching ``run_synthesis``); see
+        ``_relative_mde_binomial``.
         """
         if baseline_visitors <= 0 or baseline_conversions < 0:
             return {"table": [], "conclusion": "Invalid baseline data."}
@@ -220,9 +287,7 @@ class PretestEngine:
         results = []
         for week in range(1, 7):
             n = weekly_per_variant * week
-            mde_rel = cls._relative_mde(
-                baseline_rate, baseline_rate * (1 - baseline_rate), n, z_alpha, z_power
-            )
+            mde_rel = cls._relative_mde_binomial(baseline_rate, n, z_alpha, z_power)
             results.append(
                 {"Week": int(week), "Visitors_Per_Variant": int(n), "MDE": float(mde_rel)}
             )
@@ -240,13 +305,17 @@ class PretestEngine:
         trust_pct: float,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
         unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
     ) -> Dict[str, Any]:
         """Calculates a 6-week MDE projection for a continuous KPI (static volume).
 
         `weekly_units` is total weekly volume across all variants, counted in the
         analysis unit (visitors for per-visitor, transactions for per-transaction).
         `mean`/`variance` are the per-unit moments (for per-visitor, use
-        ``compound_per_visitor_moments``).
+        ``compound_per_visitor_moments``). Each week's MDE is the exact inverse
+        of ``calculate_fixed_sample_size_continuous`` with the same
+        `variance_scaling`; under CV_CONSTANT a week with too little volume for
+        any lift to reach the target power gets ``MDE: None``.
         """
         if weekly_units <= 0 or mean <= 0 or variance <= 0:
             return {"table": [], "conclusion": "Invalid baseline data (need volume, mean, variance > 0)."}
@@ -261,14 +330,13 @@ class PretestEngine:
         results = []
         for week in range(1, 7):
             n = weekly_per_variant * week
-            mde_rel = cls._relative_mde(mean, variance, n, z_alpha, z_power)
-            results.append(
-                {"Week": int(week), "Units_Per_Variant": int(n), "MDE": float(mde_rel)}
-            )
+            mde_rel = cls._relative_mde(mean, variance, n, z_alpha, z_power, variance_scaling)
+            results.append({"Week": int(week), "Units_Per_Variant": int(n), "MDE": mde_rel})
 
         return {
             "table": results,
             "unit": unit.value,
+            "variance_scaling": variance_scaling.value,
             "conclusion": cls.generate_mde_table_conclusion(results),
         }
 
@@ -283,6 +351,7 @@ class PretestEngine:
         risk_pct: float,
         trust_pct: float,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
     ) -> Dict[str, Any]:
         """Calculates a 6-week MDE projection for revenue-per-visitor (RPV).
 
@@ -326,6 +395,7 @@ class PretestEngine:
             trust_pct=trust_pct,
             alternative=alternative,
             unit=AnalysisUnit.PER_VISITOR,
+            variance_scaling=variance_scaling,
         )
 
     # ------------------------------------------------------------------ #
@@ -651,6 +721,7 @@ class PretestEngine:
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
         kpi_cv: Optional[float] = None,
         unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION,
+        variance_scaling: VarianceScaling = VarianceScaling.EQUAL,
     ) -> Dict[str, Any]:
         """Seasonal 6-week MDE from forecast records (see TrafficForecastingEngine).
 
@@ -659,7 +730,11 @@ class PretestEngine:
         mean for each cumulative week is ``sum(pred_value) / sum(pred_count)``.
 
         Pass ``kpi_cv`` for a continuous KPI (variance = (cv * mean)**2); leave it
-        as None for a binomial KPI (variance = mean * (1 - mean)).
+        as None for a binomial KPI, whose MDE then uses the unpooled variance of
+        ``run_synthesis`` (see ``_relative_mde_binomial``), so it is the inverse
+        of ``calculate_fixed_sample_size``. `variance_scaling` applies to the
+        continuous KPI only (see ``_relative_mde``); a week too short for any
+        lift to reach the target power under CV_CONSTANT gets ``MDE: None``.
         """
         if not forecast_records:
             return {"table": [], "conclusion": "No forecast data provided."}
@@ -700,13 +775,18 @@ class PretestEngine:
                 )
                 continue
 
-            mde_rel = cls._relative_mde(mean, variance, n_per_variant, z_alpha, z_power)
+            if kpi_cv is None:
+                mde_rel = cls._relative_mde_binomial(mean, n_per_variant, z_alpha, z_power)
+            else:
+                mde_rel = cls._relative_mde(
+                    mean, variance, n_per_variant, z_alpha, z_power, variance_scaling
+                )
             results.append(
                 {
                     "Week": int(week),
                     "Units_Per_Variant": int(n_per_variant),
                     "Mean": float(mean),
-                    "MDE": float(mde_rel),
+                    "MDE": mde_rel,
                 }
             )
 

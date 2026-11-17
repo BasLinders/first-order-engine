@@ -352,3 +352,132 @@ def test_binomial_power_matches_monte_carlo_of_run_synthesis(p1, lift, n):
     rejects, _, _ = _simulate_unpooled_ztest_rejects(p1, p1 * (1 + lift), n, 0.05, 50_000, rng)
     predicted = Engine.calculate_power_binomial(p1, lift, n, num_variants=2)["power"]
     assert rejects.mean() == pytest.approx(predicted, abs=0.01)
+
+
+# --------------------------------------------------------------------- #
+#  Binomial MDE tables invert the unpooled sample size
+# --------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("baseline_cr", [0.002, 0.01, 0.03, 0.30])
+@pytest.mark.parametrize("num_variants, alternative", [(2, TWO_SIDED), (2, AlternativeHypothesis.GREATER), (3, TWO_SIDED)])
+def test_binomial_mde_table_inverts_sample_size_and_power(baseline_cr, num_variants, alternative):
+    weekly = 40_000
+    table = Engine.calculate_mde_table(
+        num_variants, weekly, int(weekly * baseline_cr), risk_pct=95, trust_pct=80,
+        alternative=alternative,
+    )["table"]
+    for row in table:
+        n, mde = row["Visitors_Per_Variant"], row["MDE"] / 100
+        sized = Engine.calculate_fixed_sample_size(
+            baseline_cr, mde, num_variants, power=0.80, alternative=alternative
+        )["n_per_variant"]
+        assert sized in (n, n + 1)  # exact inverse up to the ceil in the sample size
+        power = Engine.calculate_power_binomial(
+            baseline_cr, mde, n, num_variants, alternative=alternative
+        )["power"]
+        assert power == pytest.approx(0.80, abs=1e-3)
+
+
+def test_binomial_mde_at_recommended_n_is_the_planned_lift():
+    """Low-baseline case where the old 2*p*q MDE reported 44.7% for the
+    39,143 visitors needed to detect a 50% lift."""
+    n = Engine.calculate_fixed_sample_size(0.002, 0.50, 2)["n_per_variant"]
+    mde = Engine._relative_mde_binomial(0.002, n, norm.ppf(0.975), norm.ppf(0.80))
+    assert mde == pytest.approx(50.0, abs=0.01)
+
+
+def test_forecast_binomial_mde_matches_static_table():
+    """A flat forecast with a binomial KPI must reproduce calculate_mde_table."""
+    records = [
+        {"ds": d, "pred_count": 10_000.0, "pred_value": 30.0}
+        for d in range(42)
+    ]
+    forecast = Engine.calculate_mde_from_forecast(records, 2, risk_pct=95, trust_pct=80)["table"]
+    static = Engine.calculate_mde_table(2, 70_000, 210, risk_pct=95, trust_pct=80)["table"]
+    for f_row, s_row in zip(forecast, static):
+        assert f_row["MDE"] == pytest.approx(s_row["MDE"], rel=1e-12)
+
+
+# --------------------------------------------------------------------- #
+#  Continuous MDE tables honour variance_scaling
+# --------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("scaling", [VarianceScaling.EQUAL, VarianceScaling.CV_CONSTANT])
+@pytest.mark.parametrize("cv", [0.8, 1.5, 6.5])
+@pytest.mark.parametrize("num_variants, alternative", [(2, TWO_SIDED), (2, AlternativeHypothesis.GREATER), (3, TWO_SIDED)])
+def test_continuous_mde_table_inverts_sample_size_and_power(scaling, cv, num_variants, alternative):
+    table = Engine.calculate_mde_table_continuous(
+        num_variants, 6_000, 1.0, cv**2, risk_pct=95, trust_pct=80,
+        alternative=alternative, variance_scaling=scaling,
+    )["table"]
+    for row in table:
+        n, mde = row["Units_Per_Variant"], row["MDE"] / 100
+        sized = Engine.calculate_fixed_sample_size_continuous(
+            1.0, cv**2, mde, num_variants, power=0.80, alternative=alternative,
+            variance_scaling=scaling,
+        )["n_per_variant"]
+        assert sized in (n, n + 1)  # exact inverse up to the ceil in the sample size
+        power = Engine.calculate_power_continuous(
+            1.0, cv**2, mde, n, num_variants, alternative=alternative,
+            variance_scaling=scaling,
+        )["power"]
+        assert power == pytest.approx(0.80, abs=1e-3)
+
+
+def test_continuous_mde_table_equal_variance_unchanged():
+    """EQUAL keeps the closed form (z_a + z_b) * sqrt(2 var / n) / mean."""
+    table = Engine.calculate_mde_table_continuous(2, 10_000, 55.0, 70.0**2, 95, 80)["table"]
+    k = norm.ppf(0.975) + norm.ppf(0.80)
+    for row in table:
+        expected = k * np.sqrt(2 * 70.0**2 / row["Units_Per_Variant"]) / 55.0 * 100
+        assert row["MDE"] == pytest.approx(expected, rel=1e-12)
+
+
+def test_cv_constant_mde_exceeds_equal_variance_mde():
+    kwargs = dict(num_variants=2, weekly_units=4_000, mean=1.0, variance=1.5**2,
+                  risk_pct=95, trust_pct=80)
+    equal = Engine.calculate_mde_table_continuous(**kwargs)["table"]
+    cv_const = Engine.calculate_mde_table_continuous(
+        **kwargs, variance_scaling=VarianceScaling.CV_CONSTANT
+    )["table"]
+    assert all(c["MDE"] > e["MDE"] for c, e in zip(cv_const, equal))
+
+
+def test_cv_constant_mde_is_none_when_no_lift_reaches_power():
+    """n <= K * CV**2: even an unbounded lift cannot reach the target power,
+    because the treatment variance grows with the lift."""
+    k = (norm.ppf(0.975) + norm.ppf(0.80)) ** 2
+    cv = 6.5
+    weekly_units = int(2 * k * cv**2 / 3)  # week 1 and 2 below the bound, week 3 at it
+    result = Engine.calculate_mde_table_continuous(
+        2, weekly_units, 1.0, cv**2, 95, 80, variance_scaling=VarianceScaling.CV_CONSTANT
+    )
+    mdes = [row["MDE"] for row in result["table"]]
+    assert mdes[0] is None and mdes[1] is None
+    assert all(m is not None for m in mdes[3:])
+    assert "2 weeks of volume is too little" in result["conclusion"]
+
+
+def test_mde_table_rpv_passes_variance_scaling_through():
+    kwargs = dict(num_variants=2, weekly_visitors=50_000, conversion_rate=0.03,
+                  txn_mean=70.0, txn_variance=80.0**2, risk_pct=95, trust_pct=80)
+    rpv = Engine.calculate_mde_table_rpv(**kwargs, variance_scaling=VarianceScaling.CV_CONSTANT)
+    mean, var = Engine.compound_per_visitor_moments(70.0, 80.0**2, 0.03)
+    manual = Engine.calculate_mde_table_continuous(
+        2, 50_000, mean, var, 95, 80, unit=AnalysisUnit.PER_VISITOR,
+        variance_scaling=VarianceScaling.CV_CONSTANT,
+    )
+    assert rpv["table"] == manual["table"]
+    assert rpv["variance_scaling"] == VarianceScaling.CV_CONSTANT.value
+
+
+def test_forecast_cv_constant_mde_matches_static_table():
+    records = [{"ds": d, "pred_count": 1_000.0, "pred_value": 1_900.0} for d in range(42)]
+    forecast = Engine.calculate_mde_from_forecast(
+        records, 2, 95, 80, kpi_cv=1.5, variance_scaling=VarianceScaling.CV_CONSTANT
+    )["table"]
+    static = Engine.calculate_mde_table_continuous(
+        2, 7_000, 1.9, (1.5 * 1.9) ** 2, 95, 80, variance_scaling=VarianceScaling.CV_CONSTANT
+    )["table"]
+    for f_row, s_row in zip(forecast, static):
+        assert f_row["MDE"] == pytest.approx(s_row["MDE"], rel=1e-12)
