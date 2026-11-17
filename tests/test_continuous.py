@@ -75,7 +75,8 @@ def test_heuristic_normal_heterogeneous_uses_welch(engine):
     Normal residuals with heterogeneous variance (verified: p_norm ~= 0.68,
     levene p ~= 1e-13 at seed=15) must route to Welch's ANOVA rather than
     crashing -- regression test for the aov["p-unc"]/aov["p_unc"] column
-    name mismatch against the installed pingouin version.
+    name mismatch against the installed pingouin version. The pingouin-version
+    independent check lives in test_pingouin_col_* below.
     """
     rng = np.random.default_rng(15)
     n = 500
@@ -89,6 +90,25 @@ def test_heuristic_normal_heterogeneous_uses_welch(engine):
     assert result.is_normal is True
     assert result.is_homogeneous is False
     assert 0.0 <= result.p_value <= 1.0
+
+
+@pytest.mark.parametrize("p_col", ["p_unc", "p-unc"])
+def test_pingouin_col_accepts_both_pingouin_spellings(p_col):
+    """
+    pingouin >= 0.6 names Welch's p-value column "p_unc"; 0.5.x (still allowed
+    by the dependency floor, and pinned by downstream apps) names it "p-unc".
+    Both must resolve, whichever pingouin happens to be installed.
+    """
+    aov = pd.DataFrame({"Source": ["g"], "F": [4.2], p_col: [0.041], "np2": [0.01]})
+    col = ContinuousMetricEngine._pingouin_col(aov, "p_unc", "p-unc")
+    assert col == p_col
+    assert float(aov[col].iloc[0]) == pytest.approx(0.041)
+
+
+def test_pingouin_col_raises_clear_error_when_no_candidate_present():
+    aov = pd.DataFrame({"Source": ["g"], "pvalue": [0.041]})
+    with pytest.raises(KeyError, match="p_unc"):
+        ContinuousMetricEngine._pingouin_col(aov, "p_unc", "p-unc")
 
 
 def test_heuristic_non_normal_two_groups_uses_mann_whitney(engine):

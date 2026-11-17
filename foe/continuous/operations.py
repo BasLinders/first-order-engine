@@ -516,6 +516,24 @@ class ContinuousMetricEngine:
     # Path implementations
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _pingouin_col(frame: pd.DataFrame, *candidates: str) -> str:
+        """
+        Return the first of ``candidates`` present in a pingouin result frame.
+
+        pingouin 0.6 renamed its output columns to snake_case (e.g. "p-unc" ->
+        "p_unc"), and the dependency floor still admits 0.5.x, so callers pass
+        every known spelling, newest first.
+        """
+        for name in candidates:
+            if name in frame.columns:
+                return name
+        raise KeyError(
+            f"None of the columns {list(candidates)} are in the pingouin result "
+            f"(got {list(frame.columns)}); the installed pingouin version may "
+            "have renamed them again."
+        )
+
     def _run_gamma_path(
         self, work, kpi, group_col, groups, num_groups, unit, alpha,
         control_label, warnings,
@@ -606,8 +624,9 @@ class ContinuousMetricEngine:
 
         if is_normal and not is_homogeneous:
             aov = welch_anova(data=work, dv=kpi, between=group_col)
+            p_col = self._pingouin_col(aov, "p_unc", "p-unc")
             return (
-                "Welch's ANOVA", float(aov["p_unc"].iloc[0]),
+                "Welch's ANOVA", float(aov[p_col].iloc[0]),
                 is_normal, is_homogeneous, None, None,
             )
 
