@@ -1,8 +1,15 @@
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from foe.pretest.operations import PretestEngine
-from foe.core.models import AlternativeHypothesis, AnalysisUnit
+from foe.core.models import (
+    AlternativeHypothesis,
+    AnalysisUnit,
+    ExperimentInput,
+    VarianceScaling,
+)
+from foe.frequentist.operations import FrequentistEngine
 
 Engine = PretestEngine
 TWO_SIDED = AlternativeHypothesis.TWO_SIDED
@@ -254,3 +261,94 @@ def test_power_rpv_rejects_invalid_inputs():
         expected_lift=0.10, n_per_variant=0, num_variants=2,
     )
     assert result["power"] == 0.0
+
+
+# --------------------------------------------------------------------- #
+#  Pretest power / sample size target run_synthesis's unpooled z-test
+# --------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("baseline_cr, mde", [(0.01, 0.20), (0.002, 0.50), (0.05, 0.10), (0.30, 0.05)])
+@pytest.mark.parametrize("alternative", [TWO_SIDED, AlternativeHypothesis.GREATER])
+def test_binomial_sample_size_and_power_round_trip(baseline_cr, mde, alternative):
+    n = Engine.calculate_fixed_sample_size(
+        baseline_cr, mde, num_variants=2, power=0.80, alternative=alternative
+    )["n_per_variant"]
+    at_n = Engine.calculate_power_binomial(
+        baseline_cr, mde, n, num_variants=2, alternative=alternative
+    )["power"]
+    assert at_n == pytest.approx(0.80, abs=1e-3)
+    assert at_n >= 0.80
+
+
+@pytest.mark.parametrize(
+    "scaling", [VarianceScaling.EQUAL, VarianceScaling.CV_CONSTANT]
+)
+@pytest.mark.parametrize("cv, mde", [(1.5, 0.05), (0.8, 0.03), (2.0, 0.10)])
+def test_continuous_sample_size_and_power_round_trip(scaling, cv, mde):
+    n = Engine.calculate_fixed_sample_size_continuous(
+        1.0, cv**2, mde, num_variants=2, power=0.80, variance_scaling=scaling
+    )["n_per_variant"]
+    at_n = Engine.calculate_power_continuous(
+        1.0, cv**2, mde, n, num_variants=2, variance_scaling=scaling
+    )["power"]
+    assert at_n == pytest.approx(0.80, abs=1e-3)
+    assert at_n >= 0.80
+
+
+def test_continuous_equal_variance_outputs_unchanged():
+    """EQUAL scaling has identical H0/H1 variances, so the unpooled fix must
+    not move it. Pinned values were computed before the fix."""
+    power = Engine.calculate_power_continuous(1.0, 1.5**2, 0.20, 500, num_variants=2)
+    assert power["power"] == pytest.approx(0.5589, abs=1e-4)
+    power = Engine.calculate_power_continuous(1.0, 0.8**2, 0.30, 150, num_variants=2)
+    assert power["power"] == pytest.approx(0.9011, abs=1e-4)
+    for cv, mde, expected_n in [(1.5, 0.20, 883), (0.8, 0.30, 112), (2.0, 0.05, 25117)]:
+        n = Engine.calculate_fixed_sample_size_continuous(1.0, cv**2, mde, num_variants=2)
+        assert n["n_per_variant"] == expected_n
+
+
+def test_cv_constant_power_below_equal_variance_power():
+    """A larger treatment variance raises the unpooled test's threshold too,
+    so CV-constant power must sit below the equal-variance figure."""
+    kwargs = dict(mean=1.0, variance=1.5**2, expected_lift=0.20, n_per_variant=500, num_variants=2)
+    equal = Engine.calculate_power_continuous(**kwargs)["power"]
+    cv_const = Engine.calculate_power_continuous(
+        **kwargs, variance_scaling=VarianceScaling.CV_CONSTANT
+    )["power"]
+    assert cv_const < equal
+    assert cv_const == pytest.approx(0.480, abs=0.005)  # Monte Carlo: 0.483
+
+
+def _simulate_unpooled_ztest_rejects(p1, p2, n, alpha, sims, rng):
+    """Vectorised copy of run_synthesis's two-sided unpooled Wald z-test
+    (phi = 1). Returns (rejection flags, control counts, treatment counts)."""
+    c1 = rng.binomial(n, p1, size=sims)
+    c2 = rng.binomial(n, p2, size=sims)
+    r1, r2 = c1 / n, c2 / n
+    se = np.sqrt(r1 * (1 - r1) / n + r2 * (1 - r2) / n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = np.where(se > 0, (r2 - r1) / se, 0.0)
+    return 2 * norm.sf(np.abs(z)) < alpha, c1, c2
+
+
+def test_simulated_ztest_matches_run_synthesis():
+    """Guards the vectorised replica used in the Monte Carlo test below."""
+    rng = np.random.default_rng(7)
+    rejects, c1, c2 = _simulate_unpooled_ztest_rejects(0.01, 0.012, 20_000, 0.05, 200, rng)
+    engine = FrequentistEngine()
+    for i in range(len(c1)):
+        res = engine.run_synthesis(
+            ExperimentInput(visitors=[20_000, 20_000], conversions=[int(c1[i]), int(c2[i])])
+        )[0]
+        assert res.is_significant == bool(rejects[i])
+
+
+@pytest.mark.parametrize(
+    "p1, lift, n",
+    [(0.01, 0.20, 20_000), (0.002, 0.50, 10_000), (0.05, 0.10, 30_000)],
+)
+def test_binomial_power_matches_monte_carlo_of_run_synthesis(p1, lift, n):
+    rng = np.random.default_rng(20261117)
+    rejects, _, _ = _simulate_unpooled_ztest_rejects(p1, p1 * (1 + lift), n, 0.05, 50_000, rng)
+    predicted = Engine.calculate_power_binomial(p1, lift, n, num_variants=2)["power"]
+    assert rejects.mean() == pytest.approx(predicted, abs=0.01)

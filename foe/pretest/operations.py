@@ -149,9 +149,13 @@ class PretestEngine:
     ) -> float:
         """
         Exact two-sample z-test power. `z_alpha` is the already-tail-adjusted
-        critical value (so TWO_SIDED passes the alpha/2 value). Handles unequal
-        variances via separate null/alt standard errors, which is what lets the
-        CV-constant scaling change the answer.
+        critical value (so TWO_SIDED passes the alpha/2 value).
+
+        The public callers target ``run_synthesis``'s unpooled test, so they
+        pass the H1 summed variance for both `var_null_sum` and
+        `var_alt_sum`; power then reduces to ``Phi(delta/SE1 - z_alpha)``
+        (plus ``Phi(-delta/SE1 - z_alpha)`` when two-sided). Separate
+        arguments are kept for a pooled-test variant.
         """
         se_null = np.sqrt(var_null_sum / n_per_variant)
         se_alt = np.sqrt(var_alt_sum / n_per_variant)
@@ -338,21 +342,27 @@ class PretestEngine:
         power: float = 0.80,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> Dict[str, Any]:
-        """Required sample size per variant for a binomial KPI (pooled-variance form)."""
+        """Required sample size per variant for a binomial KPI.
+
+        Sized for ``FrequentistEngine.run_synthesis``'s unpooled Wald z-test,
+        whose critical value sits on the unpooled SE, so both the alpha and
+        the power term use the H1 summed variance ``p1*q1 + p2*q2``. Exact
+        inverse of ``calculate_power_binomial`` for the same inputs.
+        """
         if baseline_cr <= 0 or mde_relative <= 0:
             return {"n_per_variant": 0, "total_n": 0, "conclusion": "Invalid inputs."}
 
         p1 = baseline_cr
         p2 = baseline_cr * (1 + mde_relative)
-        p_pooled = (p1 + p2) / 2
+        var_sum = p1 * (1 - p1) + p2 * (1 - p2)
 
         z_alpha = cls.get_z_alpha(num_variants, alpha, alternative)
         z_beta = norm.ppf(power)
 
         n_per_variant = cls._sample_size_per_variant(
             mde_absolute=p2 - p1,
-            var_null_sum=2 * p_pooled * (1 - p_pooled),
-            var_alt_sum=p1 * (1 - p1) + p2 * (1 - p2),
+            var_null_sum=var_sum,
+            var_alt_sum=var_sum,
             z_alpha=z_alpha,
             z_power=z_beta,
         )
@@ -389,8 +399,10 @@ class PretestEngine:
 
         Under CV-constant scaling the treatment variance grows as
         ``variance * (1 + mde_relative)**2``; under equal variance both groups
-        share `variance`. This method is the exact inverse of
-        ``calculate_power_continuous`` for the same inputs.
+        share `variance`. Sized for ``FrequentistEngine.run_synthesis``'s
+        unpooled z-test, so the critical value uses the same summed variance
+        ``variance + var_treat`` as the power term. This method is the exact
+        inverse of ``calculate_power_continuous`` for the same inputs.
         """
         if mean <= 0 or variance <= 0 or mde_relative <= 0:
             return {"n_per_variant": 0, "total_n": 0, "conclusion": "Invalid inputs."}
@@ -406,7 +418,7 @@ class PretestEngine:
 
         n_per_variant = cls._sample_size_per_variant(
             mde_absolute=mde_absolute,
-            var_null_sum=2 * variance,
+            var_null_sum=variance + var_treat,
             var_alt_sum=variance + var_treat,
             z_alpha=z_alpha,
             z_power=z_beta,
@@ -495,18 +507,24 @@ class PretestEngine:
         target_power: float = 0.80,
         alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED,
     ) -> Dict[str, Any]:
-        """Probability of detecting a relative `expected_lift` for a binomial KPI."""
+        """Probability of detecting a relative `expected_lift` for a binomial KPI.
+
+        Targets ``FrequentistEngine.run_synthesis``'s unpooled Wald z-test:
+        the rejection threshold is ``z_alpha * sqrt((p1*q1 + p2*q2) / n)``, so
+        the critical value uses the H1 summed variance, not ``2*p1*q1``.
+        """
         if baseline_cr <= 0 or expected_lift <= 0 or n_per_variant <= 0:
             return {"power": 0.0, "conclusion": "Invalid inputs."}
 
         p1 = baseline_cr
         p2 = min(baseline_cr * (1 + expected_lift), 1.0)
         z_alpha = cls.get_z_alpha(num_variants, alpha, alternative)
+        var_sum = p1 * (1 - p1) + p2 * (1 - p2)
 
         power = cls._power_two_sample(
             delta=p2 - p1,
-            var_null_sum=2 * p1 * (1 - p1),
-            var_alt_sum=p1 * (1 - p1) + p2 * (1 - p2),
+            var_null_sum=var_sum,
+            var_alt_sum=var_sum,
             n_per_variant=n_per_variant,
             z_alpha=z_alpha,
             alternative=alternative,
@@ -538,8 +556,10 @@ class PretestEngine:
     ) -> Dict[str, Any]:
         """Probability of detecting a relative `expected_lift` for a continuous KPI.
 
-        Uses the exact two-sample z-test, so CV-constant scaling (unequal
-        treatment variance) is handled correctly. Exact inverse of
+        Targets ``FrequentistEngine.run_synthesis``'s unpooled z-test: both
+        the critical value and the spread of the statistic use the summed
+        variance ``variance + var_treat``, so CV-constant scaling (larger
+        treatment variance) raises the threshold too. Exact inverse of
         ``calculate_fixed_sample_size_continuous``.
         """
         if mean <= 0 or variance <= 0 or expected_lift <= 0 or n_per_variant <= 0:
@@ -554,7 +574,7 @@ class PretestEngine:
         z_alpha = cls.get_z_alpha(num_variants, alpha, alternative)
         power = cls._power_two_sample(
             delta=delta,
-            var_null_sum=2 * variance,
+            var_null_sum=variance + var_treat,
             var_alt_sum=variance + var_treat,
             n_per_variant=n_per_variant,
             z_alpha=z_alpha,
