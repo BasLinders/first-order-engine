@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import statsmodels.formula.api as smf
+from foe.stats import oneway
 from scipy import stats
 from typing import List, Tuple, Dict, Any
 
@@ -47,6 +47,14 @@ class BehavioralEngine:
         """
         Identifies outliers using IQR (Fast/Large) or OLS Residuals (Precise/Small).
         Returns a JSON-serializable list of booleans.
+
+        Point of interest (fixed in the native rewrite, dependency-reduction
+        step 2): on the residual path, the returned list always has one entry
+        per row of ``df``, and rows with a missing KPI or variant label are
+        never flagged. The earlier statsmodels version dropped those rows
+        before fitting, so with any NaN present it raised a length-mismatch
+        ValueError instead of returning a mask. Keep the output row-aligned
+        if this is changed.
         """
         if (
             df.empty
@@ -72,14 +80,12 @@ class BehavioralEngine:
             return mask.fillna(False).tolist()
 
         else:
-            # OLS Studentized Residuals (Precise)
-            # Wrapped in Q() to prevent statsmodels from crashing if column names have spaces
-            formula = f"Q('{kpi}') ~ C(Q('experience_variant_label'))"
-            model = smf.ols(formula, data=df).fit()
-            influence = model.get_influence()
-
-            mask = np.abs(influence.resid_studentized_internal) > threshold
-            return pd.Series(mask, index=df.index).fillna(False).tolist()
+            # OLS Studentized Residuals (Precise), one-way model kpi ~ variant
+            r = oneway.studentized_residuals_internal(
+                df[kpi], df["experience_variant_label"]
+            )
+            mask = np.abs(r) > threshold  # nan (incomplete row) -> False
+            return mask.tolist()
 
     @staticmethod
     def apply_transformations(

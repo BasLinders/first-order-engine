@@ -20,17 +20,14 @@ RESTRICTED = ("scipy", "statsmodels", "patsy", "pingouin")
 STATS_PKG_ALLOWED = {"scipy.special", "scipy.optimize"}
 
 ALLOWED_ELSEWHERE = {
-    "behavioral/operations.py": {"scipy.stats", "statsmodels.formula.api"},  # PR 2, PR 6
+    "behavioral/operations.py": {"scipy.stats"},  # PR 6
     "continuous/operations.py": {
         "scipy.stats",  # PR 6, PR 8
         "scipy.optimize",  # PR 4
         "scipy.special",  # PR 4
-        "statsmodels.api",  # PR 2
-        "statsmodels.formula.api",  # PR 2
         "statsmodels.discrete.discrete_model",  # PR 4
     },
-    "frequentist/boschloo.py": {"scipy.stats", "statsmodels.stats.proportion"},  # PR 7, PR 2
-    "frequentist/confidence.py": {"statsmodels.stats.proportion"},  # PR 2
+    "frequentist/boschloo.py": {"scipy.stats"},  # PR 7
     "frequentist/operations.py": {"statsmodels.formula.api"},  # PR 3
     "interaction/operations.py": {
         "statsmodels.api",  # PR 5

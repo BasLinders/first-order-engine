@@ -1,5 +1,5 @@
 from foe.stats.distributions import norm
-from statsmodels.stats.proportion import confint_proportions_2indep
+from foe.stats.proportions import newcombe_diff_interval
 from typing import Tuple, Dict, Any
 from foe.core.models import AlternativeHypothesis
 
@@ -68,10 +68,7 @@ def compute_newcombe_interval(
     other side unbounded, matching compute_interval_difference.
     """
     level_alpha = alpha if alternative == AlternativeHypothesis.TWO_SIDED else 2 * alpha
-    low, high = confint_proportions_2indep(
-        chal_conv, chal_n, ctrl_conv, ctrl_n,
-        method="newcomb", compare="diff", alpha=level_alpha,
-    )
+    low, high = newcombe_diff_interval(chal_conv, chal_n, ctrl_conv, ctrl_n, level_alpha)
     low, high = float(max(low, -1.0)), float(min(high, 1.0))
     if alternative == AlternativeHypothesis.GREATER:
         return (low, float("inf"))
