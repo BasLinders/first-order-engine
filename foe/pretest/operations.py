@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.stats import norm
+from foe.stats.distributions import norm
 from typing import List, Dict, Any, Optional
 
 from foe.core.models import AlternativeHypothesis, AnalysisUnit, VarianceScaling

@@ -11,7 +11,7 @@ from scipy.stats import normaltest, levene, kruskal, mannwhitneyu, rankdata
 from scipy.stats import studentized_range
 from scipy.optimize import brentq
 from scipy.special import digamma
-from scipy import stats
+from foe.stats import distributions as dist
 
 from foe.core.models import (
     AlternativeHypothesis,
@@ -89,7 +89,7 @@ class ContinuousMetricEngine:
                                              which keeps non-converting zeros.
 
     Welch's ANOVA and the Tukey / Games-Howell / Dunn post-hocs are
-    implemented natively on numpy + scipy.stats distributions (no pingouin /
+    implemented natively on numpy + foe.stats distributions (no pingouin /
     scikit-posthocs dependency).
 
     The row-level data is a ``pandas.DataFrame``; all settings arrive via a
@@ -314,7 +314,7 @@ class ContinuousMetricEngine:
         f_stat = numerator / denominator
         df1 = float(k - 1)
         df2 = float((k ** 2 - 1) / (3.0 * lam))
-        p_value = float(stats.f.sf(f_stat, df1, df2))
+        p_value = float(dist.f.sf(f_stat, df1, df2))
         return float(f_stat), df1, df2, p_value
 
     @staticmethod
@@ -431,7 +431,7 @@ class ContinuousMetricEngine:
         for i, j in pairs:
             se = math.sqrt(base_var * (1.0 / arrs[i].size + 1.0 / arrs[j].size))
             z = (mean_ranks[j] - mean_ranks[i]) / se if se > 0 else 0.0
-            p = float(2.0 * stats.norm.sf(abs(z)))
+            p = float(2.0 * dist.norm.sf(abs(z)))
             p_adj = float(min(p * m, 1.0))
             results.append(PairwiseComparisonResult(
                 comparison=f"{labels[j]} vs {labels[i]}",
@@ -452,7 +452,7 @@ class ContinuousMetricEngine:
         k, theta = params
         if k <= 0 or theta <= 0:
             return np.inf
-        return -np.sum(stats.gamma.logpdf(data, a=k, scale=theta))
+        return -np.sum(dist.gamma.logpdf(data, a=k, scale=theta))
 
     @staticmethod
     def fit_gamma(data) -> tuple[float, float, float]:
@@ -499,7 +499,7 @@ class ContinuousMetricEngine:
         k = brentq(profile, lo, hi, xtol=1e-15, rtol=4 * np.finfo(float).eps, maxiter=200)
 
         theta = mean_x / k
-        log_lik = float(stats.gamma.logpdf(x, a=k, scale=theta).sum())
+        log_lik = float(dist.gamma.logpdf(x, a=k, scale=theta).sum())
         return float(k), float(theta), log_lik
 
     @staticmethod
@@ -599,7 +599,7 @@ class ContinuousMetricEngine:
             else:
                 # df = params(Alt) - params(Null) = 2*n_params - n_params = n_params.
                 lrt_stat = max(2.0 * (alt_ll - null_ll), 0.0)
-                p_val = float(stats.chi2.sf(lrt_stat, df=n_params))
+                p_val = float(dist.chi2.sf(lrt_stat, df=n_params))
 
             posthoc_results.append(
                 ContinuousMetricEngine._lrt_posthoc_result(
@@ -742,7 +742,7 @@ class ContinuousMetricEngine:
             return 1.0, 0.0, float(alpha_alt)
 
         lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
-        p_value = float(stats.chi2.sf(lr_stat, df=df_diff))
+        p_value = float(dist.chi2.sf(lr_stat, df=df_diff))
         return p_value, float(lr_stat), float(alpha_alt)
 
     @classmethod
@@ -913,7 +913,7 @@ class ContinuousMetricEngine:
 
         df_diff = n_params * (num_groups - 1)
         lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
-        p_value = float(stats.chi2.sf(lr_stat, df=df_diff))
+        p_value = float(dist.chi2.sf(lr_stat, df=df_diff))
         outcome = _PathOutcome(
             test_name=test_name, p_value=p_value,
             test_statistic=lr_stat, test_statistic_name="LR",

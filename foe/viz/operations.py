@@ -1,7 +1,7 @@
 ﻿import string
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, beta
+from foe.stats.distributions import norm, beta
 from typing import List, Dict, Tuple, Any
 from foe.core.models import AlternativeHypothesis
 

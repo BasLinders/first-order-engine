@@ -22,7 +22,7 @@ Not in scope here: warning thresholds, UI copy, and zero-variance
 from typing import Dict, Optional
 
 import numpy as np
-from scipy.stats import norm
+from foe.stats.distributions import norm
 
 from foe.core.models import AlternativeHypothesis, DecisionRiskResult
 

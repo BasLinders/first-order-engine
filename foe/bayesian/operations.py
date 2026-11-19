@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Literal, Optional
 
 import numpy as np
-from scipy.stats import norm
+from foe.stats.distributions import norm
 
 from foe.core.models import BusinessCaseInput, BayesianResult, ExperimentInput
 

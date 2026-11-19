@@ -2,7 +2,7 @@ import math
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
-from scipy.stats import norm
+from foe.stats.distributions import norm
 from typing import List, Dict, Any, Optional, Tuple
 
 from foe.core.models import AlternativeHypothesis, ExperimentInput, FrequentistResult
