@@ -1,6 +1,6 @@
 import pandas as pd
 import scipy.stats as stats
-from foe.stats import distributions as dist
+from foe.stats.distributions import chi2
 import numpy as np
 from typing import Dict, List, Any
 
@@ -46,7 +46,7 @@ class SRMEngine:
 
         # Suppress scipy warnings if expected counts are too low
         with np.errstate(divide="ignore", invalid="ignore"):
-            chi2, p_val = stats.chisquare(f_obs=observed, f_exp=expected_counts)
+            _chi2_stat, p_val = stats.chisquare(f_obs=observed, f_exp=expected_counts)
 
         # Calculate severity (deviation of the first variant from expectation)
         severity = (observed[0] / total) - (expected[0] / sum(expected))
@@ -117,7 +117,7 @@ class SRMEngine:
             return {}
 
         # Critical value for Chi-square with 1 dof (for 2-variant tests)
-        critical_value = dist.chi2.ppf(1 - alpha, df=1)
+        critical_value = chi2.ppf(1 - alpha, df=1)
 
         # Generalized formula: chi2 = n * (p_obs - p_exp)^2 / (p_exp * (1 - p_exp))
         # Solving for margin = abs(p_obs - p_exp)
