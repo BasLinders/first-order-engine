@@ -1,5 +1,6 @@
 import pandas as pd
 import scipy.stats as stats
+from foe.stats import distributions as dist
 import numpy as np
 from typing import Dict, List, Any
 
@@ -116,7 +117,7 @@ class SRMEngine:
             return {}
 
         # Critical value for Chi-square with 1 dof (for 2-variant tests)
-        critical_value = stats.chi2.ppf(1 - alpha, df=1)
+        critical_value = dist.chi2.ppf(1 - alpha, df=1)
 
         # Generalized formula: chi2 = n * (p_obs - p_exp)^2 / (p_exp * (1 - p_exp))
         # Solving for margin = abs(p_obs - p_exp)

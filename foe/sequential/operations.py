@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import norm as scipy_norm
+from foe.stats.distributions import norm
 from typing import Tuple, Dict, Optional, Union
 from enum import Enum
 
@@ -147,7 +147,7 @@ class SequentialEngine:
         n_var = np.maximum(n_var.astype(float), 1)
         p0 = np.clip(p0, 0.001, 0.999)
         p1 = np.clip(p0 + mde, 0.001, 0.999)
-        z_alpha = scipy_norm.ppf(1 - alpha)
+        z_alpha = norm.ppf(1 - alpha)
 
         if n_ctrl is None:
             # One-sample: variance under H1 using the alternative proportion
@@ -160,7 +160,7 @@ class SequentialEngine:
         with np.errstate(divide="ignore", invalid="ignore"):
             se = np.where(se <= 0, np.nan, se)
             z_power = mde / se - z_alpha
-            power = scipy_norm.cdf(np.where(np.isnan(z_power), -np.inf, z_power))
+            power = norm.cdf(np.where(np.isnan(z_power), -np.inf, z_power))
 
         return np.where(np.isnan(power), 0.0, power)
 

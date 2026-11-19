@@ -1,4 +1,4 @@
-from scipy.stats import norm
+from foe.stats.distributions import norm
 from statsmodels.stats.proportion import confint_proportions_2indep
 from typing import Tuple, Dict, Any
 from foe.core.models import AlternativeHypothesis

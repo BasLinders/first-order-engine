@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import scipy.stats as stats
+from foe.stats.distributions import norm
 from typing import Optional
 from enum import Enum
 
@@ -36,9 +36,9 @@ class GSDEngine:
             return alpha
 
         if method == GSDSpendingMethod.OBRIEN_FLEMING:
-            z_alpha = stats.norm.ppf(1 - alpha / 2)
+            z_alpha = norm.ppf(1 - alpha / 2)
             # 2 * (1 - Phi(Z_{1-alpha/2} / sqrt(t)))
-            return 2 * (1 - stats.norm.cdf(z_alpha / np.sqrt(t)))
+            return 2 * (1 - norm.cdf(z_alpha / np.sqrt(t)))
 
         elif method == GSDSpendingMethod.POCOCK:
             # alpha * ln(1 + (e - 1) * t)
@@ -136,7 +136,7 @@ class GSDEngine:
 
                 # Marginal boundary approximation for UI visualization
                 merged["marginal_z_bound"] = merged["alpha_spent"].apply(
-                    lambda a: stats.norm.ppf(1 - a / 2) if a > 0 else np.inf
+                    lambda a: norm.ppf(1 - a / 2) if a > 0 else np.inf
                 )
 
                 # Assign status based on marginal boundary
@@ -168,7 +168,7 @@ class GSDEngine:
                 )
 
                 merged["marginal_z_bound"] = merged["alpha_spent"].apply(
-                    lambda a: stats.norm.ppf(1 - a / 2) if a > 0 else np.inf
+                    lambda a: norm.ppf(1 - a / 2) if a > 0 else np.inf
                 )
 
                 merged["status"] = np.where(
