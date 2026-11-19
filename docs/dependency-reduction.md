@@ -19,7 +19,7 @@ Pin upper bounds on the remaining dependencies so upgrades are deliberate and va
 
 ### Structure
 
-All native statistics live in `foe/stats/`. It is the only package that imports scipy, and only `scipy.special` and `scipy.optimize`. Engines import their statistics from `foe.stats`. `tests/test_dependency_boundary.py` enforces this. Its allowlist of remaining third-party imports must shrink with each step.
+All native statistics are in `foe/stats/`. It is the only package that imports scipy, and only `scipy.special` and `scipy.optimize`. Engines import their statistics from `foe.stats`. `tests/test_dependency_boundary.py` enforces this. Its allowlist of remaining third-party imports must shrink with each step.
 
 ### Steps
 
