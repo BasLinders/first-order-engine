@@ -16,7 +16,8 @@ from foe.stats.distributions import beta, chi2, f, gamma, norm
 RTOL = 1e-12
 
 X = np.concatenate([np.linspace(-40, 40, 401), [-np.inf, np.inf, 0.0]])
-Q = np.concatenate([np.logspace(-300, -1, 60), np.linspace(0.01, 0.99, 99), 1 - np.logspace(-15, -1, 30), [0.0, 1.0]])
+Q = np.concatenate([np.logspace(-300, -1, 60), np.linspace(0.01,
+                   0.99, 99), 1 - np.logspace(-15, -1, 30), [0.0, 1.0]])
 
 
 def close(a, b, rtol=RTOL):
@@ -30,7 +31,8 @@ def test_norm_matches_scipy(loc, scale):
     close(norm.cdf(X, loc, scale), sps.norm.cdf(X, loc, scale))
     close(norm.sf(X, loc, scale), sps.norm.sf(X, loc, scale))
     close(norm.pdf(X, loc, scale), sps.norm.pdf(X, loc, scale))
-    close(norm.logpdf(X[np.isfinite(X)], loc, scale), sps.norm.logpdf(X[np.isfinite(X)], loc, scale))
+    close(norm.logpdf(X[np.isfinite(X)], loc, scale),
+          sps.norm.logpdf(X[np.isfinite(X)], loc, scale))
     close(norm.ppf(Q, loc, scale), sps.norm.ppf(Q, loc, scale))
     close(norm.isf(Q, loc, scale), sps.norm.isf(Q, loc, scale))
 
@@ -98,11 +100,13 @@ def test_f_invalid_inputs():
 @pytest.mark.parametrize("a,scale", [(0.5, 1.0), (1.0, 2.0), (3.7, 0.25), (150.0, 10.0)])
 def test_gamma_logpdf_matches_scipy(a, scale):
     x = np.concatenate([np.linspace(1e-6, 50 * scale + a * scale * 3, 400), [-1.0]])
-    close(gamma.logpdf(x, a=a, scale=scale), sps.gamma.logpdf(x, a=a, scale=scale), rtol=1e-11)
+    close(gamma.logpdf(x, a=a, scale=scale),
+          sps.gamma.logpdf(x, a=a, scale=scale), rtol=1e-11)
 
 
 def test_gamma_logpdf_at_zero_and_invalid():
-    assert gamma.logpdf(0.0, a=1.0, scale=2.0) == pytest.approx(sps.gamma.logpdf(0.0, a=1.0, scale=2.0))
+    assert gamma.logpdf(0.0, a=1.0, scale=2.0) == pytest.approx(
+        sps.gamma.logpdf(0.0, a=1.0, scale=2.0))
     assert gamma.logpdf(0.0, a=0.5) == np.inf
     assert gamma.logpdf(0.0, a=2.0) == -np.inf
     assert np.isnan(gamma.logpdf(1.0, a=0.0))

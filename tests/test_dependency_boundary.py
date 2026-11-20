@@ -20,7 +20,8 @@ RESTRICTED = ("scipy", "statsmodels", "patsy", "pingouin")
 STATS_PKG_ALLOWED = {"scipy.special", "scipy.optimize"}
 
 ALLOWED_ELSEWHERE = {
-    "behavioral/operations.py": {"scipy.stats", "statsmodels.formula.api"},  # PR 2, PR 6
+    # PR 2, PR 6
+    "behavioral/operations.py": {"scipy.stats", "statsmodels.formula.api"},
     "continuous/operations.py": {
         "scipy.stats",  # PR 6, PR 8
         "scipy.optimize",  # PR 4
@@ -29,7 +30,8 @@ ALLOWED_ELSEWHERE = {
         "statsmodels.formula.api",  # PR 2
         "statsmodels.discrete.discrete_model",  # PR 4
     },
-    "frequentist/boschloo.py": {"scipy.stats", "statsmodels.stats.proportion"},  # PR 7, PR 2
+    # PR 7, PR 2
+    "frequentist/boschloo.py": {"scipy.stats", "statsmodels.stats.proportion"},
     "frequentist/confidence.py": {"statsmodels.stats.proportion"},  # PR 2
     "frequentist/operations.py": {"statsmodels.formula.api"},  # PR 3
     "interaction/operations.py": {
@@ -84,5 +86,7 @@ def test_engines_import_statistics_from_foe_stats():
         seen.add(rel)
     stale += [f"{rel}: (file not found)" for rel in ALLOWED_ELSEWHERE if rel not in seen]
 
-    assert not violations, "Import these from foe.stats instead:\n" + "\n".join(violations)
-    assert not stale, "Remove from ALLOWED_ELSEWHERE, no longer imported:\n" + "\n".join(stale)
+    assert not violations, "Import these from foe.stats instead:\n" + \
+        "\n".join(violations)
+    assert not stale, "Remove from ALLOWED_ELSEWHERE, no longer imported:\n" + \
+        "\n".join(stale)

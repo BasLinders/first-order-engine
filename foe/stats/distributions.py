@@ -79,7 +79,8 @@ class _Chi2:
         x, df = np.broadcast_arrays(_arr(x), _arr(df))
         valid = df > 0
         with np.errstate(invalid="ignore"):
-            p = special.gammaincc(np.where(valid, df, 1.0) / 2.0, np.maximum(x, 0.0) / 2.0)
+            p = special.gammaincc(np.where(valid, df, 1.0) / \
+                                  2.0, np.maximum(x, 0.0) / 2.0)
         p = np.where(x < 0, 1.0, p)
         return _out(np.where(valid & ~np.isnan(x), p, np.nan))
 
@@ -87,7 +88,8 @@ class _Chi2:
         q, df = np.broadcast_arrays(_arr(q), _arr(df))
         valid = (df > 0) & (q >= 0) & (q <= 1)
         with np.errstate(invalid="ignore"):
-            x = 2.0 * special.gammaincinv(np.where(valid, df, 1.0) / 2.0, np.where(valid, q, 0.5))
+            x = 2.0 * special.gammaincinv(np.where(valid,
+                                          df, 1.0) / 2.0, np.where(valid, q, 0.5))
         return _out(np.where(valid, x, np.nan))
 
 
@@ -117,7 +119,8 @@ class _Gamma:
         scale_s = np.where(valid, scale, 1.0)
         y = x / scale_s
         with np.errstate(divide="ignore", invalid="ignore"):
-            lp = special.xlogy(a_s - 1.0, y) - y - special.gammaln(a_s) - np.log(scale_s)
+            lp = special.xlogy(a_s - 1.0, y) - y - \
+                               special.gammaln(a_s) - np.log(scale_s)
         lp = np.where(x < 0, -np.inf, lp)
         return _out(np.where(valid, lp, np.nan))
 

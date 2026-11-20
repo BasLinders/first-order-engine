@@ -89,7 +89,8 @@ def build_baseline(p: BaselineExtractionParams, limit: int = 0) -> str:
 
 def _build_baseline_aggregate(p: BaselineExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
     limit_clause = f"\nLIMIT {limit}" if limit else ""
 
@@ -147,7 +148,8 @@ WHERE main.{suffix}{limit_clause};
 
 def _build_baseline_daily(p: BaselineExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
     limit_clause = f"\nLIMIT {limit}" if limit else ""
 
@@ -187,7 +189,8 @@ def _build_baseline_per_user(p: BaselineExtractionParams, limit: int = 0) -> str
     Binomial or Gamma) from raw data in PretestEngine's continuous-KPI mode.
     Revenue-only: a binomial baseline has no per-order raw value to fit."""
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     user_filter_cte, join_clause = _baseline_user_filter(p, table, suffix)
     limit_clause = f"\nLIMIT {limit}" if limit else ""
 
@@ -223,16 +226,20 @@ def _variant_case_block(
     lines = []
     for v in exp.variants:
         if strategy == MatchStrategy.EXACT:
-            lines.append(f"      WHEN {source_col} = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+            lines.append(
+                f"      WHEN {source_col} = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
         else:
-            lines.append(f"      WHEN {source_col} LIKE '%{_esc(v.string)}%' THEN '{_esc(v.label)}'")
+            lines.append(
+                f"      WHEN {source_col} LIKE '%{_esc(v.string)}%' THEN '{_esc(v.label)}'")
     return "\n".join(lines)
 
 
 def build_binomial(p: BinomialExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
-    suffix_e = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat(), alias="e")
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
+    suffix_e = suffix_filter(p.date_range.start_date.isoformat(),
+                             p.date_range.end_date.isoformat(), alias="e")
     exp = p.experiments[0]
 
     all_variant_strings = [v.string for v in exp.variants]
@@ -245,7 +252,8 @@ def build_binomial(p: BinomialExtractionParams, limit: int = 0) -> str:
 
     # CASE WHEN in variant_data operates on exp_variant_string (extracted from
     # user_initial_exposure), not directly on params.value.string_value.
-    case_block = _variant_case_block(exp, p.match_strategy, source_col="exp_variant_string")
+    case_block = _variant_case_block(
+        exp, p.match_strategy, source_col="exp_variant_string")
 
     # -----------------------------------------------------------------------
     # Exposure CTEs
@@ -499,7 +507,8 @@ ideal_users AS (
     if p.kpi_login:
         final_cols.append("    COALESCE(ld.has_logged_in, 0) AS has_logged_in")
     if p.kpi_create_account:
-        final_cols.append("    COALESCE(cd.has_created_account, 0) AS has_created_account")
+        final_cols.append(
+            "    COALESCE(cd.has_created_account, 0) AS has_created_account")
 
     final_select = ",\n".join(final_cols)
 
@@ -568,7 +577,8 @@ ORDER BY experience_variant_label{limit_clause};
 
 def build_continuous(p: ContinuousExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     exp = p.experiments[0]
 
     all_variant_strings = [v.string for v in exp.variants]
@@ -582,7 +592,8 @@ def build_continuous(p: ContinuousExtractionParams, limit: int = 0) -> str:
     case_lines = []
     for v in exp.variants:
         op = "LIKE" if p.match_strategy == MatchStrategy.LIKE else "="
-        case_lines.append(f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+        case_lines.append(
+            f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
     case_block = "\n".join(case_lines)
 
     join_type = "INNER JOIN" if p.query_mode == ContinuousQueryMode.REVENUE_ONLY else "LEFT JOIN"
@@ -849,7 +860,8 @@ def build_binomial_from_shared_scan(p: BinomialExtractionParams) -> str:
     else:
         exp_filter = f"AND exp_variant_string IN ({variant_in_list})"
 
-    case_block = _variant_case_block(exp, p.match_strategy, source_col="exp_variant_string")
+    case_block = _variant_case_block(
+        exp, p.match_strategy, source_col="exp_variant_string")
 
     ts_col = "event_timestamp AS first_exposure_timestamp," if p.post_exposure_filter else ""
 
@@ -1053,7 +1065,8 @@ ideal_users AS (
     if p.kpi_login:
         final_cols.append("    COALESCE(ld.has_logged_in, 0) AS has_logged_in")
     if p.kpi_create_account:
-        final_cols.append("    COALESCE(cd.has_created_account, 0) AS has_created_account")
+        final_cols.append(
+            "    COALESCE(cd.has_created_account, 0) AS has_created_account")
 
     final_select = ",\n".join(final_cols)
 
@@ -1134,7 +1147,8 @@ def build_continuous_from_shared_scan(p: ContinuousExtractionParams) -> str:
     case_lines = []
     for v in exp.variants:
         op = "LIKE" if p.match_strategy == MatchStrategy.LIKE else "="
-        case_lines.append(f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+        case_lines.append(
+            f"      WHEN exp_variant_string {op} '{_esc(v.string)}' THEN '{_esc(v.label)}'")
     case_block = "\n".join(case_lines)
 
     join_type = "INNER JOIN" if p.query_mode == ContinuousQueryMode.REVENUE_ONLY else "LEFT JOIN"
@@ -1266,7 +1280,8 @@ def build_experiment_session_output_sql(cte_chain: str, limit: int = 0) -> str:
 
 def build_sequential(p: SequentialExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     exp = p.experiments[0]
 
     all_variant_strings = [v.string for v in exp.variants]
@@ -1274,7 +1289,8 @@ def build_sequential(p: SequentialExtractionParams, limit: int = 0) -> str:
 
     case_lines = []
     for v in exp.variants:
-        case_lines.append(f"      WHEN exp_variant_string = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
+        case_lines.append(
+            f"      WHEN exp_variant_string = '{_esc(v.string)}' THEN '{_esc(v.label)}'")
     case_block = "\n".join(case_lines)
 
     cumulative_table = (
@@ -1296,7 +1312,8 @@ def build_sequential(p: SequentialExtractionParams, limit: int = 0) -> str:
         optional_cols_schema += "  has_logged_in INT64,\n"
         optional_cols_extract += "  COALESCE(ld.has_logged_in, 0) AS has_logged_in,\n"
 
-    final_selects = ["  experience_variant_label", "  COUNT(DISTINCT variant_user_pseudo_id) AS visitors"]
+    final_selects = ["  experience_variant_label",
+        "  COUNT(DISTINCT variant_user_pseudo_id) AS visitors"]
     if p.kpi_transactions:
         final_selects += [
             "  COUNT(DISTINCT CASE WHEN transaction_id IS NOT NULL THEN variant_user_pseudo_id END) AS users_with_transaction",
@@ -1312,9 +1329,11 @@ def build_sequential(p: SequentialExtractionParams, limit: int = 0) -> str:
             "  COUNT(DISTINCT CASE WHEN is_desktop_user = 1 THEN variant_user_pseudo_id END) AS desktop_users",
         ]
     if p.kpi_add_to_cart:
-        final_selects.append("  COUNT(DISTINCT CASE WHEN added_to_cart = 1 THEN variant_user_pseudo_id END) AS add_to_cart")
+        final_selects.append(
+            "  COUNT(DISTINCT CASE WHEN added_to_cart = 1 THEN variant_user_pseudo_id END) AS add_to_cart")
     if p.kpi_ideal:
-        final_selects.append("  COUNT(DISTINCT CASE WHEN paid_with_ideal = 1 THEN variant_user_pseudo_id END) AS paid_with_ideal")
+        final_selects.append(
+            "  COUNT(DISTINCT CASE WHEN paid_with_ideal = 1 THEN variant_user_pseudo_id END) AS paid_with_ideal")
 
     select_block = ",\n".join(final_selects)
     limit_clause = f"\nLIMIT {limit}" if limit else ""
@@ -1456,7 +1475,8 @@ ORDER BY 1{limit_clause};
 
 def build_interaction(p: InteractionExtractionParams, limit: int = 0) -> str:
     table = table_ref(p.connection.project, p.connection.dataset)
-    suffix = suffix_filter(p.date_range.start_date.isoformat(), p.date_range.end_date.isoformat())
+    suffix = suffix_filter(p.date_range.start_date.isoformat(),
+                           p.date_range.end_date.isoformat())
     n = len(p.experiments)
 
     # Collect all variant strings for the IN filter
@@ -1482,7 +1502,8 @@ def build_interaction(p: InteractionExtractionParams, limit: int = 0) -> str:
         )
     concat_block = ",\n".join(concat_cases)
 
-    select_cols = ["  experience_variant_label", "  COUNT(DISTINCT variant_user_pseudo_id) AS total_users"]
+    select_cols = ["  experience_variant_label",
+        "  COUNT(DISTINCT variant_user_pseudo_id) AS total_users"]
     if p.kpi_transactions:
         select_cols += [
             "  COUNT(DISTINCT CASE WHEN ed.transaction_id IS NOT NULL THEN cu.variant_user_pseudo_id END) AS users_with_transaction",

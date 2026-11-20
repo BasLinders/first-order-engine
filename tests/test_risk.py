@@ -77,7 +77,8 @@ def test_invalid_prior_raises(args, match):
 ])
 def test_standard_fpr_and_fndr(prior, fpr, fndr):
     assert false_positive_risk(ALPHA, POWER, prior) == pytest.approx(fpr, abs=1e-4)
-    assert false_negative_discovery_rate(ALPHA, POWER, prior) == pytest.approx(fndr, abs=1e-4)
+    assert false_negative_discovery_rate(
+        ALPHA, POWER, prior) == pytest.approx(fndr, abs=1e-4)
 
 
 def test_standard_fpr_and_fndr_at_prior_bounds():
@@ -153,12 +154,14 @@ def test_extreme_evidence_is_finite(alternative):
     for z in (60.0, -60.0, 1e6):
         value = _fpr_at_z(z, ALPHA, POWER, 0.1, alternative)
         assert math.isfinite(value) and 0.0 <= value <= 1.0
-    assert _fpr_at_z(60.0, ALPHA, POWER, 0.1, alternative) == pytest.approx(0.0, abs=1e-12)
+    assert _fpr_at_z(60.0, ALPHA, POWER, 0.1,
+                     alternative) == pytest.approx(0.0, abs=1e-12)
     # p-values at the edge of float range, and exactly 0 or 1
     for p in (1e-300, 0.0, 1.0):
         value = fpr_at_p_value(p, ALPHA, POWER, 0.1, alternative)
         assert math.isfinite(value) and 0.0 <= value <= 1.0
-    assert fpr_at_p_value(0.0, ALPHA, POWER, 0.1, alternative) == pytest.approx(0.0, abs=1e-12)
+    assert fpr_at_p_value(0.0, ALPHA, POWER, 0.1,
+                          alternative) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_one_sided_p_of_one_is_certain_false_positive():

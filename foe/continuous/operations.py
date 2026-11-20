@@ -496,7 +496,8 @@ class ContinuousMetricEngine:
             lo /= 2.0
         while profile(hi) >= 0:
             hi *= 2.0
-        k = brentq(profile, lo, hi, xtol=1e-15, rtol=4 * np.finfo(float).eps, maxiter=200)
+        k = brentq(profile, lo, hi, xtol=1e-15, rtol=4 * \
+                   np.finfo(float).eps, maxiter=200)
 
         theta = mean_x / k
         log_lik = float(dist.gamma.logpdf(x, a=k, scale=theta).sum())
@@ -686,12 +687,14 @@ class ContinuousMetricEngine:
         """
         data = work[kpi].to_numpy(dtype=float)
         n = data.size
-        dummies = pd.get_dummies(work[group_col].astype(str), drop_first=True).to_numpy(dtype=float)
+        dummies = pd.get_dummies(work[group_col].astype(
+            str), drop_first=True).to_numpy(dtype=float)
 
         exog_null = np.ones((n, 1))
         ll_null, _, res_null = ContinuousMetricEngine.fit_negbin(data, exog_null)
 
-        exog_alt = np.column_stack([np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
+        exog_alt = np.column_stack(
+            [np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
         ll_alt, alpha_alt, res_alt = ContinuousMetricEngine.fit_negbin(data, exog_alt)
 
         # Degenerate/tiny samples can fail to converge to a finite log-likelihood on some
@@ -714,7 +717,8 @@ class ContinuousMetricEngine:
         # group modelled has a positive total. A group of all zeros is the separation case.
         # (Refitting a Poisson model and checking its bse is not a version-stable signal:
         # statsmodels 0.15 returns huge but finite bse for a separated Poisson fit.)
-        group_totals = pd.Series(data).groupby(work[group_col].astype(str).to_numpy()).sum()
+        group_totals = pd.Series(data).groupby(
+            work[group_col].astype(str).to_numpy()).sum()
 
         def _identified(res, group_totals_positive: bool) -> bool:
             if np.all(np.isfinite(res.bse)):
@@ -1153,8 +1157,10 @@ class ContinuousMetricEngine:
         se_mean_chal = (std_chal / math.sqrt(n_chal)) if n_chal > 0 else 0.0
 
         diff_value = (rate_chal * mean_chal) - (rate_ctrl * mean_ctrl)
-        var_chal = (mean_chal ** 2) * (se_rate_chal ** 2) + (rate_chal ** 2) * (se_mean_chal ** 2)
-        var_ctrl = (mean_ctrl ** 2) * (se_rate_ctrl ** 2) + (rate_ctrl ** 2) * (se_mean_ctrl ** 2)
+        var_chal = (mean_chal ** 2) * (se_rate_chal ** 2) + \
+                    (rate_chal ** 2) * (se_mean_chal ** 2)
+        var_ctrl = (mean_ctrl ** 2) * (se_rate_ctrl ** 2) + \
+                    (rate_ctrl ** 2) * (se_mean_ctrl ** 2)
         se_diff_value = math.sqrt(var_chal + var_ctrl)
 
         ci_diff_value = compute_interval_difference(
@@ -1224,7 +1230,8 @@ class ContinuousMetricEngine:
                 continue
             monetary = self.estimate_monetary_impact_per_variant(
                 mean_ctrl=ctrl["mean"], std_ctrl=ctrl["std"], n_ctrl=int(ctrl["count"]),
-                mean_chal=stats_["mean"], std_chal=stats_["std"], n_chal=int(stats_["count"]),
+                mean_chal=stats_["mean"], std_chal=stats_[
+                    "std"], n_chal=int(stats_["count"]),
                 unit=unit,
                 daily_visitors=daily_visitors,
                 visitors_ctrl=visitor_counts.get(control_label),
