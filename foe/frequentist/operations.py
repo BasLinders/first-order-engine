@@ -23,7 +23,7 @@ def apply_sidak(alpha: float, num_variants: int) -> float:
 
 class FrequentistEngine:
     """
-    Axiom Frequentist Engine: Variance Reduction (CUPED/Lin/Aggregate),
+    FOE Frequentist Engine: Variance Reduction (CUPED/Lin/Aggregate),
     Robust OLS Inference, High-Performance Bootstrapping, and Bayesian
     decision-risk (false-positive / false-negative) reporting.
     Stateless design optimized for Cloud Functions.
