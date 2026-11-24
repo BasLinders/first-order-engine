@@ -30,9 +30,9 @@ import math
 from typing import List, Optional, Tuple
 
 from scipy.stats import boschloo_exact
-from statsmodels.stats.proportion import confint_proportions_2indep
 
 from foe.core.models import AlternativeHypothesis, BoschlooResult, ExperimentInput
+from foe.frequentist.confidence import compute_newcombe_interval
 from foe.frequentist.operations import apply_sidak
 
 DEFAULT_MAX_VISITORS_PER_ARM = 1000
@@ -109,18 +109,11 @@ class BoschlooEngine:
         [-1, 1] and behaves well with zero counts, unlike the Wald interval.
         One-sided alternatives return a single bound at level 1 - alpha with
         the other side unbounded, matching compute_interval_difference.
+        Delegates to foe.frequentist.confidence.compute_newcombe_interval.
         """
-        level_alpha = alpha if alternative == AlternativeHypothesis.TWO_SIDED else 2 * alpha
-        low, high = confint_proportions_2indep(
-            chal_conv, chal_n, ctrl_conv, ctrl_n,
-            method="newcomb", compare="diff", alpha=level_alpha,
+        return compute_newcombe_interval(
+            ctrl_conv, ctrl_n, chal_conv, chal_n, alpha, alternative
         )
-        low, high = float(max(low, -1.0)), float(min(high, 1.0))
-        if alternative == AlternativeHypothesis.GREATER:
-            return (low, float("inf"))
-        if alternative == AlternativeHypothesis.LESS:
-            return (float("-inf"), high)
-        return (low, high)
 
     @staticmethod
     def generate_conclusion_statement(

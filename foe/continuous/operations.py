@@ -4,14 +4,13 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 import numpy as np
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
 from statsmodels.discrete.discrete_model import NegativeBinomial
 from scipy.stats import normaltest, levene, kruskal, mannwhitneyu, rankdata
 from scipy.stats import studentized_range
 from scipy.optimize import brentq
 from scipy.special import digamma
 from foe.stats import distributions as dist
+from foe.stats import oneway
 
 from foe.core.models import (
     AlternativeHypothesis,
@@ -149,14 +148,21 @@ class ContinuousMetricEngine:
         at uneven splits they flag most or all of a small variant. The
         studentized residual already accounts for group size through
         sqrt(1 - h).
+
+        Point of interest (fixed in the native rewrite, dependency-reduction
+        step 2): the returned list always has one entry per row of ``df``,
+        and rows with a missing KPI or group label are never flagged. The
+        earlier statsmodels version silently dropped those rows, so with any
+        NaN present the list came back shorter than ``df`` and no longer lined
+        up with its rows. It also built a formula from the column names, which
+        failed for names containing spaces or other non-identifier characters.
+        Keep the output row-aligned if this is changed.
         """
         if df.empty or len(df[kpi].dropna()) < 3:
             return [False] * len(df)
 
-        model = smf.ols(f"{kpi} ~ C({group_col})", data=df).fit()
-        influence = model.get_influence()
-
-        outlier_mask = np.abs(influence.resid_studentized_internal) > threshold
+        r = oneway.studentized_residuals_internal(df[kpi], df[group_col])
+        outlier_mask = np.abs(r) > threshold  # nan (incomplete row) -> False
         return outlier_mask.tolist()  # Safe for JSON
 
     @classmethod
@@ -964,13 +970,12 @@ class ContinuousMetricEngine:
                 work, kpi, group_col, num_groups, alpha, control_label,
             )
 
-        model = smf.ols(f"{kpi} ~ C({group_col})", data=work).fit()
-
         # Normality of residuals via D'Agostino's K^2 omnibus test (skewness +
         # kurtosis): reliable for large samples and no N > 5000 warning, so the
         # full residual vector is used. The kurtosis component needs N >= 20;
         # below that, fall back to non-parametric handling.
-        resid = model.resid.dropna()
+        resid = oneway.residuals(work[kpi], work[group_col])
+        resid = resid[~np.isnan(resid)]
         normality_stat = normality_p = None
         if len(resid) >= 20:
             normality_stat, normality_p = (float(x) for x in normaltest(resid))
@@ -991,14 +996,12 @@ class ContinuousMetricEngine:
         posthoc_fn = posthoc_name = None
 
         if is_normal and is_homogeneous:
-            anova_results = sm.stats.anova_lm(model, typ=2)
-            ss_between = float(anova_results["sum_sq"].iloc[0])
-            ss_resid = float(anova_results["sum_sq"].iloc[1])
+            aov = oneway.anova(groups)
             outcome.test_name = "Standard ANOVA"
-            outcome.p_value = float(anova_results["PR(>F)"].iloc[0])
-            outcome.test_statistic = float(anova_results["F"].iloc[0])
+            outcome.p_value = aov.p_value
+            outcome.test_statistic = aov.f_stat
             outcome.test_statistic_name = "F"
-            outcome.effect_size = ss_between / (ss_between + ss_resid)
+            outcome.effect_size = aov.ss_between / (aov.ss_between + aov.ss_within)
             outcome.effect_size_name = "eta_squared"
             posthoc_fn, posthoc_name = self.tukey_hsd, "Tukey HSD"
 
