@@ -28,7 +28,6 @@ ALLOWED_ELSEWHERE = {
         "statsmodels.discrete.discrete_model",  # PR 4
     },
     "frequentist/boschloo.py": {"scipy.stats"},  # PR 7
-    "frequentist/operations.py": {"statsmodels.formula.api"},  # PR 3
     "interaction/operations.py": {
         "statsmodels.api",  # PR 5
         "statsmodels.genmod.generalized_linear_model",  # PR 5

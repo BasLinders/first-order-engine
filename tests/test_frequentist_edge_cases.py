@@ -169,20 +169,18 @@ def test_lin_unknown_control_label_raises():
         )
 
 
-def test_lin_two_sided_p_matches_statsmodels():
-    import statsmodels.formula.api as smf
-
-    df = _lin_frame()
+def test_lin_two_sided_p_and_ci_are_wald_z():
+    # Estimates and HC3 SEs are checked against R in test_stats_regression.py;
+    # here: p-value and CI follow from them as a two-sided Wald z test.
     res = FrequentistEngine.run_lin_adjustment(
-        df, "converted", "pre", control_label="control"
+        _lin_frame(), "converted", "pre", control_label="control"
     )[0]
-    d = df.assign(cov_centered=df["pre"] - df["pre"].mean())
-    model = smf.ols(
-        "converted ~ C(variant, Treatment(reference='control')) * cov_centered", data=d
-    ).fit(cov_type="HC3")
-    term = "C(variant, Treatment(reference='control'))[T.Alt]"
-    assert res["p_value"] == pytest.approx(model.pvalues[term])
-    assert res["ci"] == pytest.approx(model.conf_int(alpha=0.05).loc[term].tolist())
+    z = res["absolute_lift"] / res["std_err"]
+    assert res["p_value"] == pytest.approx(2 * norm.sf(abs(z)), rel=1e-12)
+    half = norm.ppf(0.975) * res["std_err"]
+    assert res["ci"] == pytest.approx(
+        [res["absolute_lift"] - half, res["absolute_lift"] + half], rel=1e-12
+    )
 
 
 def test_lin_one_sided():

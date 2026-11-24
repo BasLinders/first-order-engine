@@ -1,7 +1,7 @@
 import math
 import numpy as np
 import pandas as pd
-import statsmodels.formula.api as smf
+from foe.stats.regression import ols_hc3
 from foe.stats.distributions import norm
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -173,11 +173,28 @@ class FrequentistEngine:
 
         Each result's "alpha" is the adjusted threshold actually applied.
         "relative_lift" is None when the fitted control mean is 0.
+
+        The covariate is centered on its mean over all rows with a covariate
+        value; the fit then uses the rows complete in outcome, covariate and
+        variant. Both match the earlier statsmodels formula version.
+
+        Point of interest (fixed in the native rewrite, dependency-reduction
+        step 3): the earlier version built a patsy formula from the column
+        names and labels, so it failed for column names with spaces or other
+        non-identifier characters, for labels containing quotes, and when
+        the variant column had missing values. The design matrix is now
+        built directly; keep it that way if this is changed.
+
+        Point of interest (same step): a variant whose rows are fit exactly
+        (e.g. a stray label with 2 users, which has its own intercept and
+        slope) now gets nan std_err, p_value and ci bounds, and is_significant
+        False. statsmodels reported a finite standard error there that was
+        round-off noise. Other variants' results are unaffected.
         """
         df = df.copy()
         df["cov_centered"] = df[pre_period_kpi] - df[pre_period_kpi].mean()
 
-        variants = sorted(df[variant_col].unique())
+        variants = sorted(df[variant_col].dropna().unique())
         if control_label is None:
             baseline = variants[0]
         elif control_label not in variants:
@@ -190,19 +207,30 @@ class FrequentistEngine:
         challengers = [v for v in variants if v != baseline]
         adj_alpha = apply_sidak(alpha, len(variants))
 
-        formula = f"{target_kpi} ~ C({variant_col}, Treatment(reference='{baseline}')) * cov_centered"
-        model = smf.ols(formula, data=df).fit(cov_type="HC3")
+        # Design: [1, D_c..., x, D_c * x...] with D_c the challenger dummies
+        # (treatment coding against the baseline) and x the centered covariate.
+        # D_c's coefficient is challenger c's effect at the covariate mean.
+        fit_rows = df[[target_kpi, "cov_centered", variant_col]].notna().all(axis=1)
+        d = df.loc[fit_rows]
+        x = d["cov_centered"].to_numpy(dtype=float)
+        dummies = np.column_stack(
+            [(d[variant_col] == c).to_numpy(dtype=float) for c in challengers]
+        ) if challengers else np.empty((len(d), 0))
+        X = np.column_stack([np.ones(len(d)), dummies, x, dummies * x[:, None]])
+        model = ols_hc3(X, d[target_kpi].to_numpy(dtype=float))
+        control_mean = float(model.params[0])
 
         results = []
-        for challenger in challengers:
-            term = (
-                f"C({variant_col}, Treatment(reference='{baseline}'))[T.{challenger}]"
+        for j, challenger in enumerate(challengers, start=1):
+            ate = float(model.params[j])
+            se = float(model.bse[j])
+            # nan SE: the variant is fit exactly (e.g. 2 users for its own
+            # intercept and slope), so its uncertainty is undefined. Report
+            # that as nan rather than letting it read as p = 1.
+            p_val = (
+                FrequentistEngine.run_ztest(ate, se, alternative)
+                if math.isfinite(se) else float("nan")
             )
-
-            ate = float(model.params[term])
-            se = float(model.bse[term])
-            control_mean = float(model.params["Intercept"])
-            p_val = FrequentistEngine.run_ztest(ate, se, alternative)
 
             results.append(
                 {
