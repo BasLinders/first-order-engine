@@ -330,10 +330,12 @@ class BayesianEngine:
                 np.average(challenger_samples > control_samples, weights=weights)
             )
             expected_uplift = float(
-                np.average(np.maximum(challenger_samples - control_samples, 0), weights=weights)
+                np.average(np.maximum(challenger_samples - \
+                           control_samples, 0), weights=weights)
             )
             expected_loss = float(
-                np.average(np.maximum(control_samples - challenger_samples, 0), weights=weights)
+                np.average(np.maximum(control_samples - \
+                           challenger_samples, 0), weights=weights)
             )
             prob_best = float(prob_best_overall[i])
 
@@ -377,7 +379,8 @@ class BayesianEngine:
         """
         beta_prior = beta_prior or get_beta_prior()
 
-        samples = self._sample_posteriors(data.visitors, data.conversions, beta_prior, n_samples)
+        samples = self._sample_posteriors(
+            data.visitors, data.conversions, beta_prior, n_samples)
         weights = self._compute_joint_lift_weights(samples, lift_prior)
         idx = self.rng.choice(n_samples, size=n_samples, p=weights)
 
@@ -459,7 +462,8 @@ class BayesianEngine:
             )
 
         # (num_variants, n_simulations)
-        samples = self._sample_posteriors(visitors, conversions, beta_prior, n_simulations)
+        samples = self._sample_posteriors(
+            visitors, conversions, beta_prior, n_simulations)
         weights = self._compute_joint_lift_weights(samples, lift_prior)
         ess = self._effective_sample_size(weights)
         prob_best = np.bincount(
@@ -500,12 +504,15 @@ class BayesianEngine:
             )
 
             # Rate-based, so it matches run_probability_analysis.
-            prob_beat_control = float(np.average(variant_cr > control_cr, weights=weights))
+            prob_beat_control = float(np.average(
+                variant_cr > control_cr, weights=weights))
             prob_revenue_better = float(np.average(rev_diff > 0, weights=weights))
 
             period = biz_case.projection_period
-            uplift = period * float(np.average(np.maximum(rev_diff, 0.0), weights=weights))
-            risk = period * float(np.average(np.maximum(-rev_diff, 0.0), weights=weights))
+            uplift = period * \
+                float(np.average(np.maximum(rev_diff, 0.0), weights=weights))
+            risk = period * \
+                float(np.average(np.maximum(-rev_diff, 0.0), weights=weights))
 
             conclusion = self.generate_bayesian_conclusion(
                 variant_name=variant_label,

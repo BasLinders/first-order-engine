@@ -68,7 +68,8 @@ def compute_newcombe_interval(
     other side unbounded, matching compute_interval_difference.
     """
     level_alpha = alpha if alternative == AlternativeHypothesis.TWO_SIDED else 2 * alpha
-    low, high = newcombe_diff_interval(chal_conv, chal_n, ctrl_conv, ctrl_n, level_alpha)
+    low, high = newcombe_diff_interval(
+        chal_conv, chal_n, ctrl_conv, ctrl_n, level_alpha)
     low, high = float(max(low, -1.0)), float(min(high, 1.0))
     if alternative == AlternativeHypothesis.GREATER:
         return (low, float("inf"))

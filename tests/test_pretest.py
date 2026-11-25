@@ -303,14 +303,16 @@ def test_continuous_equal_variance_outputs_unchanged():
     power = Engine.calculate_power_continuous(1.0, 0.8**2, 0.30, 150, num_variants=2)
     assert power["power"] == pytest.approx(0.9011, abs=1e-4)
     for cv, mde, expected_n in [(1.5, 0.20, 883), (0.8, 0.30, 112), (2.0, 0.05, 25117)]:
-        n = Engine.calculate_fixed_sample_size_continuous(1.0, cv**2, mde, num_variants=2)
+        n = Engine.calculate_fixed_sample_size_continuous(
+            1.0, cv**2, mde, num_variants=2)
         assert n["n_per_variant"] == expected_n
 
 
 def test_cv_constant_power_below_equal_variance_power():
     """A larger treatment variance raises the unpooled test's threshold too,
     so CV-constant power must sit below the equal-variance figure."""
-    kwargs = dict(mean=1.0, variance=1.5**2, expected_lift=0.20, n_per_variant=500, num_variants=2)
+    kwargs = dict(mean=1.0, variance=1.5**2, expected_lift=0.20,
+                  n_per_variant=500, num_variants=2)
     equal = Engine.calculate_power_continuous(**kwargs)["power"]
     cv_const = Engine.calculate_power_continuous(
         **kwargs, variance_scaling=VarianceScaling.CV_CONSTANT
@@ -334,11 +336,13 @@ def _simulate_unpooled_ztest_rejects(p1, p2, n, alpha, sims, rng):
 def test_simulated_ztest_matches_run_synthesis():
     """Guards the vectorised replica used in the Monte Carlo test below."""
     rng = np.random.default_rng(7)
-    rejects, c1, c2 = _simulate_unpooled_ztest_rejects(0.01, 0.012, 20_000, 0.05, 200, rng)
+    rejects, c1, c2 = _simulate_unpooled_ztest_rejects(
+        0.01, 0.012, 20_000, 0.05, 200, rng)
     engine = FrequentistEngine()
     for i in range(len(c1)):
         res = engine.run_synthesis(
-            ExperimentInput(visitors=[20_000, 20_000], conversions=[int(c1[i]), int(c2[i])])
+            ExperimentInput(visitors=[20_000, 20_000],
+                            conversions=[int(c1[i]), int(c2[i])])
         )[0]
         assert res.is_significant == bool(rejects[i])
 
@@ -349,7 +353,8 @@ def test_simulated_ztest_matches_run_synthesis():
 )
 def test_binomial_power_matches_monte_carlo_of_run_synthesis(p1, lift, n):
     rng = np.random.default_rng(20261117)
-    rejects, _, _ = _simulate_unpooled_ztest_rejects(p1, p1 * (1 + lift), n, 0.05, 50_000, rng)
+    rejects, _, _ = _simulate_unpooled_ztest_rejects(
+        p1, p1 * (1 + lift), n, 0.05, 50_000, rng)
     predicted = Engine.calculate_power_binomial(p1, lift, n, num_variants=2)["power"]
     assert rejects.mean() == pytest.approx(predicted, abs=0.01)
 
@@ -392,8 +397,10 @@ def test_forecast_binomial_mde_matches_static_table():
         {"ds": d, "pred_count": 10_000.0, "pred_value": 30.0}
         for d in range(42)
     ]
-    forecast = Engine.calculate_mde_from_forecast(records, 2, risk_pct=95, trust_pct=80)["table"]
-    static = Engine.calculate_mde_table(2, 70_000, 210, risk_pct=95, trust_pct=80)["table"]
+    forecast = Engine.calculate_mde_from_forecast(
+        records, 2, risk_pct=95, trust_pct=80)["table"]
+    static = Engine.calculate_mde_table(
+        2, 70_000, 210, risk_pct=95, trust_pct=80)["table"]
     for f_row, s_row in zip(forecast, static):
         assert f_row["MDE"] == pytest.approx(s_row["MDE"], rel=1e-12)
 
@@ -426,7 +433,8 @@ def test_continuous_mde_table_inverts_sample_size_and_power(scaling, cv, num_var
 
 def test_continuous_mde_table_equal_variance_unchanged():
     """EQUAL keeps the closed form (z_a + z_b) * sqrt(2 var / n) / mean."""
-    table = Engine.calculate_mde_table_continuous(2, 10_000, 55.0, 70.0**2, 95, 80)["table"]
+    table = Engine.calculate_mde_table_continuous(
+        2, 10_000, 55.0, 70.0**2, 95, 80)["table"]
     k = norm.ppf(0.975) + norm.ppf(0.80)
     for row in table:
         expected = k * np.sqrt(2 * 70.0**2 / row["Units_Per_Variant"]) / 55.0 * 100
@@ -461,7 +469,8 @@ def test_cv_constant_mde_is_none_when_no_lift_reaches_power():
 def test_mde_table_rpv_passes_variance_scaling_through():
     kwargs = dict(num_variants=2, weekly_visitors=50_000, conversion_rate=0.03,
                   txn_mean=70.0, txn_variance=80.0**2, risk_pct=95, trust_pct=80)
-    rpv = Engine.calculate_mde_table_rpv(**kwargs, variance_scaling=VarianceScaling.CV_CONSTANT)
+    rpv = Engine.calculate_mde_table_rpv(
+        **kwargs, variance_scaling=VarianceScaling.CV_CONSTANT)
     mean, var = Engine.compound_per_visitor_moments(70.0, 80.0**2, 0.03)
     manual = Engine.calculate_mde_table_continuous(
         2, 50_000, mean, var, 95, 80, unit=AnalysisUnit.PER_VISITOR,
@@ -472,7 +481,8 @@ def test_mde_table_rpv_passes_variance_scaling_through():
 
 
 def test_forecast_cv_constant_mde_matches_static_table():
-    records = [{"ds": d, "pred_count": 1_000.0, "pred_value": 1_900.0} for d in range(42)]
+    records = [{"ds": d, "pred_count": 1_000.0, "pred_value": 1_900.0}
+        for d in range(42)]
     forecast = Engine.calculate_mde_from_forecast(
         records, 2, 95, 80, kpi_cv=1.5, variance_scaling=VarianceScaling.CV_CONSTANT
     )["table"]

@@ -34,7 +34,8 @@ NEWCOMBE_R = [
     (499, 500, 1, 500, 0.10, 0.98622194952121711, 0.99819724809653498),
 ]
 
-Y = [12.1, 9.8, 11.4, 10.2, 30.5, 8.7, 14.2, 13.9, 15.1, 12.8, 16.4, 7.5, 9.9, 10.6, 11.8]
+Y = [12.1, 9.8, 11.4, 10.2, 30.5, 8.7, 14.2,
+    13.9, 15.1, 12.8, 16.4, 7.5, 9.9, 10.6, 11.8]
 G = list("AAAAABBBBBCCCCC")
 # lm(y ~ g), R 4.6.2
 RSTANDARD_R = [
@@ -44,7 +45,8 @@ RSTANDARD_R = [
     -0.26629968991656616, -0.12718791160194218, 0.11128942265169939,
 ]
 RESID_R = [
-    -2.7, -5.0, -3.4, -4.6, 15.7, -4.24, 1.26, 0.96, 2.16, -0.14, 5.16, -3.74, -1.34, -0.64, 0.56,
+    -2.7, -5.0, -3.4, -4.6, 15.7, -4.24, 1.26, 0.96, 2.16, - \
+        0.14, 5.16, -3.74, -1.34, -0.64, 0.56,
 ]
 ANOVA_R = dict(ss_between=31.705333333333346, ss_within=379.80399999999997,
                f_stat=0.50086886920622242, p_value=0.61812892575554979)
@@ -76,8 +78,10 @@ def test_proportions_reject_invalid_counts(bad):
 def test_newcombe_one_sided_and_clipping_conventions():
     # Two-sided at 2*alpha supplies the one-sided bound; the other side is open.
     two = compute_newcombe_interval(120, 1000, 150, 1000, 0.10)
-    greater = compute_newcombe_interval(120, 1000, 150, 1000, 0.05, AlternativeHypothesis.GREATER)
-    less = compute_newcombe_interval(120, 1000, 150, 1000, 0.05, AlternativeHypothesis.LESS)
+    greater = compute_newcombe_interval(
+        120, 1000, 150, 1000, 0.05, AlternativeHypothesis.GREATER)
+    less = compute_newcombe_interval(
+        120, 1000, 150, 1000, 0.05, AlternativeHypothesis.LESS)
     assert greater == (two[0], math.inf)
     assert less == (-math.inf, two[1])
     # p_chal - p_ctrl with ctrl at 5/5 and chal at 0/5 hits the -1 bound.
@@ -94,7 +98,8 @@ def test_boschloo_delegates_to_shared_newcombe():
 
 def test_oneway_matches_r():
     np.testing.assert_allclose(oneway.residuals(Y, G), RESID_R, rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(oneway.studentized_residuals_internal(Y, G), RSTANDARD_R, rtol=1e-12)
+    np.testing.assert_allclose(
+        oneway.studentized_residuals_internal(Y, G), RSTANDARD_R, rtol=1e-12)
     groups = [np.array(Y[i:i + 5]) for i in (0, 5, 10)]
     aov = oneway.anova(groups)
     for k, v in ANOVA_R.items():
@@ -116,7 +121,8 @@ def test_oneway_incomplete_rows_get_nan_and_dont_count():
 
 def test_oneway_degenerate_cases_are_nan_not_round_off():
     # Singleton group: leverage 1, residual 0/0.
-    assert np.isnan(oneway.studentized_residuals_internal([1.0, 2, 3, 4, 10], list("AAAAB"))[4])
+    assert np.isnan(oneway.studentized_residuals_internal(
+        [1.0, 2, 3, 4, 10], list("AAAAB"))[4])
     # Zero within-group variance: exact zeros, never studentized into noise.
     r = oneway.studentized_residuals_internal([1.0, 1, 1, 2, 2, 2], list("AAABBB"))
     assert np.all(np.isnan(r))
@@ -128,7 +134,8 @@ def test_oneway_degenerate_cases_are_nan_not_round_off():
     # N = k leaves no residual degrees of freedom.
     assert math.isnan(oneway.anova([[1.0], [2.0]]).p_value)
     # No complete rows at all.
-    assert np.all(np.isnan(oneway.studentized_residuals_internal([np.nan, np.nan], ["A", "B"])))
+    assert np.all(np.isnan(oneway.studentized_residuals_internal(
+        [np.nan, np.nan], ["A", "B"])))
     with pytest.raises(ValueError):
         oneway.residuals([1.0, 2.0], ["A"])
 
@@ -136,7 +143,8 @@ def test_oneway_degenerate_cases_are_nan_not_round_off():
 # --- engine fixes: row-aligned outlier masks with missing values -------------
 
 def _frame_with_missing():
-    df = pd.DataFrame({"value": Y + [np.nan, 4.0], "experience_variant_label": G + ["A", None]})
+    df = pd.DataFrame({"value": Y + [np.nan, 4.0],
+                      "experience_variant_label": G + ["A", None]})
     df.index = range(100, 117)  # non-default index must not matter
     return df
 

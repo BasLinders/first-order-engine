@@ -80,5 +80,7 @@ def test_engines_import_statistics_from_foe_stats():
         seen.add(rel)
     stale += [f"{rel}: (file not found)" for rel in ALLOWED_ELSEWHERE if rel not in seen]
 
-    assert not violations, "Import these from foe.stats instead:\n" + "\n".join(violations)
-    assert not stale, "Remove from ALLOWED_ELSEWHERE, no longer imported:\n" + "\n".join(stale)
+    assert not violations, "Import these from foe.stats instead:\n" + \
+        "\n".join(violations)
+    assert not stale, "Remove from ALLOWED_ELSEWHERE, no longer imported:\n" + \
+        "\n".join(stale)

@@ -289,7 +289,8 @@ class PretestEngine:
             n = weekly_per_variant * week
             mde_rel = cls._relative_mde_binomial(baseline_rate, n, z_alpha, z_power)
             results.append(
-                {"Week": int(week), "Visitors_Per_Variant": int(n), "MDE": float(mde_rel)}
+                {"Week": int(week), "Visitors_Per_Variant": int(n),
+                             "MDE": float(mde_rel)}
             )
 
         return {"table": results, "conclusion": cls.generate_mde_table_conclusion(results)}
@@ -330,8 +331,10 @@ class PretestEngine:
         results = []
         for week in range(1, 7):
             n = weekly_per_variant * week
-            mde_rel = cls._relative_mde(mean, variance, n, z_alpha, z_power, variance_scaling)
-            results.append({"Week": int(week), "Units_Per_Variant": int(n), "MDE": mde_rel})
+            mde_rel = cls._relative_mde(
+                mean, variance, n, z_alpha, z_power, variance_scaling)
+            results.append(
+                {"Week": int(week), "Units_Per_Variant": int(n), "MDE": mde_rel})
 
         return {
             "table": results,
@@ -385,7 +388,8 @@ class PretestEngine:
                 ),
             }
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_mde_table_continuous(
             num_variants=num_variants,
             weekly_units=weekly_visitors,
@@ -549,7 +553,8 @@ class PretestEngine:
                 ),
             }
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_fixed_sample_size_continuous(
             mean=mean,
             variance=variance,
@@ -693,7 +698,8 @@ class PretestEngine:
         ):
             return {"power": 0.0, "conclusion": "Invalid inputs."}
 
-        mean, variance = cls.compound_per_visitor_moments(txn_mean, txn_variance, conversion_rate)
+        mean, variance = cls.compound_per_visitor_moments(
+            txn_mean, txn_variance, conversion_rate)
         return cls.calculate_power_continuous(
             mean=mean,
             variance=variance,
@@ -756,7 +762,8 @@ class PretestEngine:
 
             if total_count <= 0:
                 results.append(
-                    {"Week": int(week), "Units_Per_Variant": 0, "Mean": None, "MDE": None}
+                    {"Week": int(week), "Units_Per_Variant": 0,
+                                 "Mean": None, "MDE": None}
                 )
                 continue
 
@@ -776,7 +783,8 @@ class PretestEngine:
                 continue
 
             if kpi_cv is None:
-                mde_rel = cls._relative_mde_binomial(mean, n_per_variant, z_alpha, z_power)
+                mde_rel = cls._relative_mde_binomial(
+                    mean, n_per_variant, z_alpha, z_power)
             else:
                 mde_rel = cls._relative_mde(
                     mean, variance, n_per_variant, z_alpha, z_power, variance_scaling

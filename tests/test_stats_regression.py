@@ -64,7 +64,8 @@ def test_lin_adjustment_matches_r(case):
 # --- engine fixes (points of interest in run_lin_adjustment's docstring) -----
 
 def test_lin_accepts_awkward_column_names_and_labels():
-    df = lin_frame().rename(columns={"variant": "test variant", "pre": "pre value", "y": "order value"})
+    df = lin_frame().rename(
+        columns={"variant": "test variant", "pre": "pre value", "y": "order value"})
     df["test variant"] = df["test variant"].replace({"B": "B's arm"})
     res = FrequentistEngine.run_lin_adjustment(
         df, "order value", "pre value", variant_col="test variant", control_label="control"
@@ -85,11 +86,13 @@ def test_lin_ignores_missing_variant_labels():
 
 
 def test_lin_exactly_fit_variant_is_undefined_and_isolated():
-    base = FrequentistEngine.run_lin_adjustment(lin_frame(), "y", "pre", control_label="control")
+    base = FrequentistEngine.run_lin_adjustment(
+        lin_frame(), "y", "pre", control_label="control")
     # Two stray rows placed symmetrically around the covariate mean, so the
     # centering (and with it every other arm's estimate) is unchanged.
     m = lin_frame()["pre"].mean()
-    stray = pd.DataFrame({"variant": ["Z", "Z"], "pre": [m - 1.5, m + 1.5], "y": [3.0, 9.0]})
+    stray = pd.DataFrame({"variant": ["Z", "Z"], "pre": [
+                         m - 1.5, m + 1.5], "y": [3.0, 9.0]})
     df = pd.concat([lin_frame(), stray], ignore_index=True)
     res = {r["variant"]: r for r in FrequentistEngine.run_lin_adjustment(
         df, "y", "pre", control_label="control")}

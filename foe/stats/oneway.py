@@ -97,6 +97,7 @@ def anova(groups: Sequence[Sequence[float]]) -> OneWayAnova:
     # numpy division: zero within-group variance gives F = inf (p = 0), or
     # nan when the group means are also equal, instead of raising.
     with np.errstate(divide="ignore", invalid="ignore"):
-        f_stat = float(np.float64(ss_between / df_between) / np.float64(ss_within / df_within))
+        f_stat = float(np.float64(ss_between / df_between) / \
+                       np.float64(ss_within / df_within))
     p_value = float(f.sf(f_stat, df_between, df_within))
     return OneWayAnova(ss_between, ss_within, df_between, df_within, f_stat, p_value)
