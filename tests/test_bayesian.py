@@ -683,7 +683,11 @@ def test_mc_margin_matches_seed_to_seed_spread():
         for s in range(200)
     ]
     probs = np.array([r.prob_beat_control for r in runs])
-    ess = np.mean([r.effective_sample_size for r in runs])
+    ess_values = [
+        r.effective_sample_size for r in runs if r.effective_sample_size is not None
+    ]
+    assert len(ess_values) == len(runs)
+    ess = np.mean(ess_values)
     assert ess < 0.8 * 4_000
     predicted_sd = mc_margin(probs.mean(), ess, z=1.0)
     assert probs.std(ddof=1) == pytest.approx(predicted_sd, rel=0.25)
