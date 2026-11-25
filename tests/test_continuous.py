@@ -1266,42 +1266,48 @@ def test_run_negbin_lrt_two_groups_matches_hand_lrt(engine):
     assert 0.0 <= p_value <= 1.0
 
 
-@pytest.mark.filterwarnings("ignore")
-def test_run_negbin_lrt_raises_on_non_convergent_fit(engine):
+def test_run_negbin_lrt_raises_on_all_zero_sample(engine):
     """
-    Degenerate, tiny samples can fail to converge to a finite log-likelihood.
-    _run_negbin_lrt must raise rather than let a nan p_value leak out (a nan
-    would fail ContinuousMetricResult's p_value >= 0.0 constraint downstream).
-    Warnings are silenced: statsmodels emits convergence/separation warnings
-    for this intentionally degenerate input, which is exactly what's under test.
+    An all-zero sample carries no information about any mean or the
+    dispersion. _run_negbin_lrt must raise rather than let a meaningless
+    p-value out; callers treat that as unfittable.
     """
-    df = pd.DataFrame({GROUP_COL: ["A", "A", "B", "B"], "items": [0.0, 0.0, 1.0, 1.0]})
-    with pytest.raises(Exception):
+    df = pd.DataFrame({GROUP_COL: ["A", "A", "B", "B"], "items": [0.0, 0.0, 0.0, 0.0]})
+    with pytest.raises(ValueError, match="every count is zero"):
         ContinuousMetricEngine._run_negbin_lrt(df, "items", GROUP_COL)
 
 
-@pytest.mark.filterwarnings("ignore")
-def test_negbin_global_test_unfittable_treated_as_non_significant(engine):
+def test_run_negbin_lrt_tests_an_all_zero_variant(engine):
     """
-    Mirrors the Gamma-path nan guard: a degenerate/non-convergent global NB
-    fit must fall back to p=1.0 with a warning instead of propagating a nan
-    into the result.
+    A variant with only zero counts is fitted at mean 0 and tested normally
+    (deliberate since the native rewrite; statsmodels sometimes reported such
+    data as unfittable). Tiny case checked by hand: Poisson boundary (alpha = 0),
+    LR = 2 * [ll(means 0, 1) - ll(mean 0.5)] = 4 log 2, df = 1.
     """
     df = pd.DataFrame({GROUP_COL: ["A", "A", "B", "B"], "items": [0.0, 0.0, 1.0, 1.0]})
-    result = engine.run_comparison_suite(
-        df, ContinuousMetricConfig(kpi="items", unit=AnalysisUnit.PER_VISITOR)
-    )
-    assert result.p_value == 1.0
-    assert result.is_significant is False
-    assert any("could not be fit" in w for w in result.warnings)
+    p_value, lr_stat, disp_alpha = ContinuousMetricEngine._run_negbin_lrt(df, "items", GROUP_COL)
+    assert disp_alpha == 0.0
+    assert lr_stat == pytest.approx(4.0 * math.log(2.0), rel=1e-12)
+    assert p_value == pytest.approx(float(stats.chi2.sf(4.0 * math.log(2.0), 1)), rel=1e-12)
 
 
-@pytest.mark.filterwarnings("ignore")
+def test_negbin_global_test_unfittable_treated_as_non_significant(engine):
+    """
+    Mirrors the Gamma-path nan guard: an unfittable global NB fit (all-zero
+    counts) must fall back to p=1.0 with a warning instead of propagating a
+    nan into the result.
+    """
+    df = pd.DataFrame({GROUP_COL: ["A"] * 3 + ["B"] * 3, "items": [0.0] * 6})
+    out = engine._run_negbin_path(df, "items", GROUP_COL, 2, 0.05, None)
+    assert out.p_value == 1.0
+    assert any("could not be fit" in w for w in out.extra_warnings)
+
+
 def test_negbin_posthoc_unfittable_pair_reports_non_significant(engine):
-    """run_negbin_posthoc's own guard: a non-convergent pair reports p=1.0 rather than raising."""
+    """run_negbin_posthoc's own guard: an unfittable (all-zero) pair reports p=1.0 rather than raising."""
     df = pd.DataFrame({
         GROUP_COL: ["Control", "Control", "Tiny", "Tiny"],
-        "items": [0.0, 0.0, 1.0, 1.0],
+        "items": [0.0, 0.0, 0.0, 0.0],
     })
     results = ContinuousMetricEngine.run_negbin_posthoc(df, "items", GROUP_COL, "Control")
     assert len(results) == 1
@@ -1310,26 +1316,12 @@ def test_negbin_posthoc_unfittable_pair_reports_non_significant(engine):
     assert results[0].is_significant is False
 
 
-def _poisson_glm_lrt(df: pd.DataFrame, kpi: str) -> tuple[float, float]:
-    """Independent reference: Poisson GLM LRT of y ~ variant against y ~ 1."""
-    import statsmodels.api as sm
-    import statsmodels.formula.api as smf
-    from scipy import stats
-
-    d = df.rename(columns={kpi: "y", GROUP_COL: "g"})
-    alt = smf.glm("y ~ C(g)", d, family=sm.families.Poisson()).fit()
-    null = smf.glm("y ~ 1", d, family=sm.families.Poisson()).fit()
-    lr = 2.0 * (alt.llf - null.llf)
-    return float(lr), float(stats.chi2.sf(lr, df=alt.df_model))
-
-
 @pytest.mark.filterwarnings("ignore")
 def test_negbin_underdispersed_counts_fit_at_poisson_boundary(engine):
     """
-    Items per order (always >= 1, variance < mean) pushes the NB2 alpha to its
-    lower bound, where statsmodels returns NaN standard errors. That is not
-    separation: the LRT must still run, match a Poisson GLM LRT, and raise no
-    "could not be fit" warning.
+    Items per order (always >= 1, variance < mean) puts the NB2 alpha at the
+    Poisson boundary (exactly 0). That is not separation: the LRT must still
+    run, match R's Poisson GLM LRT, and raise no "could not be fit" warning.
     """
     rng = np.random.default_rng(42)
     df = pd.DataFrame({
@@ -1344,14 +1336,15 @@ def test_negbin_underdispersed_counts_fit_at_poisson_boundary(engine):
     result = engine.run_comparison_suite(
         df, ContinuousMetricConfig(kpi="total_item_quantity", unit=AnalysisUnit.PER_TRANSACTION)
     )
-    ref_lr, ref_p = _poisson_glm_lrt(df, "total_item_quantity")
+    # anova(glm(y ~ 1, poisson), glm(y ~ g, poisson), test = "LRT"), R 4.6.2
+    ref_lr, ref_p = 12.355849055620013, 0.00043960701722645736
 
     assert result.test_name == "Negative Binomial Regression (LRT)"
     assert not any("could not be fit" in w for w in result.warnings)
     assert result.is_significant is True
     assert result.p_value < 0.05
-    assert result.test_statistic == pytest.approx(ref_lr, rel=1e-5)
-    assert result.p_value == pytest.approx(ref_p, rel=1e-4)
+    assert result.test_statistic == pytest.approx(ref_lr, rel=1e-10)
+    assert result.p_value == pytest.approx(ref_p, rel=1e-9)
     assert result.dispersion_alpha == 0.0
 
 

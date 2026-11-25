@@ -16,17 +16,18 @@ appears there. Other engines are listed under [Not covered yet](#not-covered-yet
 | [01_frequentist_ztest](01_frequentist_ztest.ipynb) | `FrequentistEngine.run_synthesis`, `compute_interval_difference`, `apply_sidak`, `estimate_monetary_impact_per_variant`, `run_lin_adjustment` | experiment analysis, small-sample z-test fallback, automation (`run_lin_adjustment` is not used in Hexkit) | identity-link binomial `glm` (Wald SE = unpooled SE, `dispersion = φ`), `DescTools::BinomDiffCI`, `msm::deltamethod`, `lm` + `sandwich::vcovHC(type = "HC3")` | 384 |
 | [02_boschloo_exact](02_boschloo_exact.ipynb) | `BoschlooEngine` | small sample analysis | `exact2x2::boschloo`, `DescTools::BinomDiffCI(method = "score")` | 60 |
 | [03_bayesian_beta_binomial](03_bayesian_beta_binomial.ipynb) | `BayesianEngine.run_probability_analysis`, `run_monetary_projection`, `get_lift_prior` | sequential (revenue overlay), experiment analysis, automation | exact numerical integration of the Beta posteriors with the lift-prior weight (product prior for 3 arms); per-arm-AOV revenue difference at equal traffic, with mean-AOV uncertainty in closed form (Margrabe) | 47 |
-| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic incl. statistics and effect sizes, NB, Gamma, hurdle), native `welch_anova` / `tukey_hsd` / `games_howell` / `dunn_test`, `fit_gamma`, `fit_negbin`, `winsorize_series`, `detect_outliers`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `rstatix::kruskal_effsize`, `wilcox.test`, `TukeyHSD`, `rstatix::games_howell_test`, `dunn.test`, `MASS::glm.nb`, Poisson GLM LRT (underdispersed counts), `MASS::fitdistr`, exact Gamma MLE, `rstandard`, `msm::deltamethod` | 275 |
+| [04_continuous_metrics](04_continuous_metrics.ipynb) | `ContinuousMetricEngine.run_comparison_suite` (heuristic incl. statistics and effect sizes, NB, Gamma, hurdle), native `welch_anova` / `tukey_hsd` / `games_howell` / `dunn_test`, `fit_gamma`, `fit_negbin`, `winsorize_series`, `detect_outliers`, `run_business_case` | automation, user-level analysis, pre-test | `fBasics::dagoTest`, `car::leveneTest`, `anova`, `oneway.test`, `kruskal.test`, `rstatix::kruskal_effsize`, `wilcox.test`, `TukeyHSD`, `rstatix::games_howell_test`, `dunn.test`, `MASS::glm.nb`, `MASS::theta.ml` (exact NB2 profile, incl. an all-zero variant), Poisson GLM LRT (underdispersed counts), `MASS::fitdistr`, exact Gamma MLE, `rstandard`, `msm::deltamethod` | 288 |
 | [05_pretest_planning](05_pretest_planning.ipynb) | `PretestEngine` sample size, power, MDE tables (static and forecast), RPV moments | pre-test analysis, automation | `TrialSize::TwoSampleProportion.Equality`, `power.prop.test`, `TrialSize::TwoSampleMean.Equality`, `pwr::pwr.norm.test`, simulation of the unpooled z-test, root-found CV-constant sample size | 121 |
 | [06_sequential_msprt](06_sequential_msprt.ipynb) | `SequentialEngine` LLR, boundaries, power, `process_test_trajectory` | sequential analysis | numerical integration of the mixture likelihood ratio, `pwr::pwr.norm.test` | 131 |
 | [07_interaction_glm](07_interaction_glm.ipynb) | `InteractionEngine.run_interaction_analysis` | interaction analysis | `glm(cbind(conv, visitors - conv) ~ t1 * t2, binomial)` | 93 |
 
-All 1087 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
+All 1100 checks pass on the committed runs (R 4.6.2, rpy2 3.6.9, scipy 1.18.1, statsmodels 0.15.0,
 FOE at commit `904170a`; notebook 03 re-run after the mean-AOV uncertainty change; notebook 04
 re-run on Windows with R 4.6.1 for the native post-hocs and outlier helpers, and again (R 4.6.1,
 scipy 1.18.1, statsmodels 0.15.0) for the underdispersed NB case, and again (R 4.6.1, rpy2 3.6.9, scipy 1.16.3, statsmodels
 0.14.6) for the studentized-residual outlier rule and its 90/10 case; notebook 01 re-run (R 4.6.2,
-rpy2 3.6.9, sandwich 3.1.3) after Lin's adjustment moved to native OLS with HC3).
+rpy2 3.6.9, sandwich 3.1.3) after Lin's adjustment moved to native OLS with HC3; notebook 04
+re-run (R 4.6.2, MASS 7.3.66) after the NB2 fit moved to the exact native profile likelihood).
 
 ### Tolerances
 

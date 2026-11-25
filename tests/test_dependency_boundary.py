@@ -21,12 +21,7 @@ STATS_PKG_ALLOWED = {"scipy.special", "scipy.optimize"}
 
 ALLOWED_ELSEWHERE = {
     "behavioral/operations.py": {"scipy.stats"},  # PR 6
-    "continuous/operations.py": {
-        "scipy.stats",  # PR 6, PR 8
-        "scipy.optimize",  # PR 4
-        "scipy.special",  # PR 4
-        "statsmodels.discrete.discrete_model",  # PR 4
-    },
+    "continuous/operations.py": {"scipy.stats"},  # PR 6, PR 8
     "frequentist/boschloo.py": {"scipy.stats"},  # PR 7
     "interaction/operations.py": {
         "statsmodels.api",  # PR 5
