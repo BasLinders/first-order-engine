@@ -85,15 +85,3 @@ omit = [
 [tool.black]
 line-length = 88
 target-version = ['py310']
-
-[tool.pyright]
-# Pyright/Pylance doesn't recognize a positional default passed to
-# pydantic's Field(default, ...) as satisfying that constructor parameter
-# under pydantic 2.13.x -- a confirmed false positive (the flagged calls
-# construct correctly at runtime, defaults included; see any test_*.py
-# file, which all omit defaulted fields as normal, idiomatic pydantic
-# usage). Scoped to tests/, where these calls happen; foe/ itself never
-# triggers this and keeps the check fully active.
-[[tool.pyright.executionEnvironments]]
-root = "tests"
-reportCallIssue = "none"

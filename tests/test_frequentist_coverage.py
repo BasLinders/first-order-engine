@@ -252,7 +252,7 @@ def test_aggregate_variance_dow_control_lowers_seasonal_phi():
     rng = np.random.default_rng(3)
     v = rng.integers(800, 1300, days)
     dates = pd.date_range("2024-01-01", periods=days)
-    dow = dates.dayofweek.to_numpy()
+    dow = dates.day_of_week.to_numpy()
     c = rng.binomial(v, np.where(dow >= 5, 0.02, 0.05))
     df = pd.DataFrame({"date": dates, "visitors": v, "conversions": c})
     phi_plain = Engine.calculate_aggregate_variance_factor(df)["phi"]
@@ -264,7 +264,7 @@ def test_aggregate_variance_upper_clip_and_flag():
     """A single fully-converting day is clipped and flagged."""
     df = _clean_daily()
     spike = df["conversions"].to_numpy().copy()
-    spike[5] = int(df["visitors"].iloc[5])
+    spike[5] = int(df["visitors"].to_numpy()[5])
     df = df.assign(conversions=spike)
     out = Engine.calculate_aggregate_variance_factor(df)
     assert out["clipped"] is True
@@ -297,7 +297,7 @@ def test_aggregate_variance_negative_conversions_raises():
 def test_aggregate_variance_conversions_exceed_raises():
     """Conversions exceeding visitors raise."""
     df = _clean_daily()
-    df.loc[0, "conversions"] = int(df.loc[0, "visitors"]) + 1
+    df.loc[0, "conversions"] = int(df["visitors"].to_numpy()[0]) + 1
     with pytest.raises(ValueError, match="exceeds"):
         Engine.calculate_aggregate_variance_factor(df)
 

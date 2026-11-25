@@ -127,11 +127,11 @@ class FrequentistEngine:
         Requires user-level data with a pre-experiment covariate column.
         The adjusted column is written back as '{target_kpi}_cuped'.
         """
-        cov = df[[target_kpi, pre_period_kpi]].cov().iloc[0, 1]
-        var_pre = df[pre_period_kpi].var()
+        cov = float(df[[target_kpi, pre_period_kpi]].cov().to_numpy()[0, 1])
+        var_pre = float(df[pre_period_kpi].var())
 
-        theta = cov / var_pre if var_pre != 0 else 0
-        mean_pre = df[pre_period_kpi].mean()
+        theta = cov / var_pre if var_pre != 0 else 0.0
+        mean_pre = float(df[pre_period_kpi].mean())
 
         df[f"{target_kpi}_cuped"] = df[target_kpi] - theta * (
             df[pre_period_kpi] - mean_pre
@@ -327,7 +327,7 @@ class FrequentistEngine:
         # --- Centring baseline + parameter count -------------------------
         dow_controlled = False
         if date_col is not None:
-            dow = pd.to_datetime(df[date_col]).dt.dayofweek.to_numpy()
+            dow = pd.to_datetime(df[date_col]).dt.day_of_week.to_numpy()
             grp = pd.DataFrame({"dow": dow, "v": visitors, "c": conversions})
             agg = grp.groupby("dow").agg(v=("v", "sum"), c=("c", "sum"))
             agg["base"] = agg["c"] / agg["v"]

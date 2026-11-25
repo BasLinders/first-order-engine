@@ -98,7 +98,8 @@ def _apply_holidays(
                 )
             )
             for offset in range(lower_window, upper_window + 1):
-                pos = date_index.get_indexer([event_date + pd.Timedelta(days=offset)])[0]
+                target = pd.DatetimeIndex([event_date + pd.Timedelta(days=offset)])
+                pos = date_index.get_indexer(target)[0]
                 if pos != -1:
                     bump[pos] += magnitude * (1.0 if offset == 0 else _HOLIDAY_WINDOW_DECAY)
 
@@ -139,10 +140,10 @@ def generate_mock_forecast_data(
 
     trend = 40 + day_index * 0.05
 
-    weekday = dates.weekday.values
+    weekday = dates.day_of_week.values
     weekly = np.where(weekday >= 5, -8.0, 3.0)  # weekend dip
 
-    day_of_year = dates.dayofyear.values
+    day_of_year = dates.day_of_year.values
     yearly = 15 * np.sin(2 * np.pi * (day_of_year - 80) / 365.25) + 10 * np.exp(
         -((day_of_year - 330) ** 2) / (2 * 20.0 ** 2)
     )  # broad summer/winter swing, plus a late-November shopping-season bump

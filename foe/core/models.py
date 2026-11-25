@@ -32,17 +32,17 @@ class BusinessCaseInput(BaseModel):
     )
     runtime_days: int = Field(..., gt=0)
     projection_period: int = Field(
-        183, gt=0, description="Projection period in days (default: 6 months)"
+        default=183, gt=0, description="Projection period in days (default: 6 months)"
     )
     alpha_prior: float = Field(
-        1.0, gt=0.0,
+        default=1.0, gt=0.0,
         description=(
             "Beta prior alpha for every arm's conversion rate in "
             "run_monetary_projection, used when no beta_prior argument is passed."
         ),
     )
     beta_prior: float = Field(
-        1.0, gt=0.0,
+        default=1.0, gt=0.0,
         description=(
             "Beta prior beta for every arm's conversion rate in "
             "run_monetary_projection, used when no beta_prior argument is passed."
@@ -62,9 +62,9 @@ class ExperimentInput(BaseModel):
         ..., description="List of conversion counts per variant", min_length=2
     )
     alternative: AlternativeHypothesis = AlternativeHypothesis.TWO_SIDED
-    confidence_level: float = Field(0.95, gt=0.0, lt=1.0)
+    confidence_level: float = Field(default=0.95, gt=0.0, lt=1.0)
     reduction_factor: float = Field(
-        1.0,
+        default=1.0,
         description=(
             "Variance scaling factor φ. Values below 1.0 shrink standard errors "
             "(stable process); above 1.0 inflate them (overdispersion). Produced by "
@@ -72,10 +72,12 @@ class ExperimentInput(BaseModel):
         ),
     )
     labels: Optional[List[str]] = Field(
-        None, description="Names of the variants (e.g., ['Control', 'Treatment'])"
+        default=None,
+        description="Names of the variants (e.g., ['Control', 'Treatment'])"
     )
     biz_case: Optional[BusinessCaseInput] = Field(
-        None, description="Optional business case for monetary risk projections (Bayesian only)"
+        default=None,
+        description="Optional business case for monetary risk projections (Bayesian only)"
     )
 
     @model_validator(mode="after")
@@ -120,7 +122,7 @@ class FrequentistResult(BaseModel):
     lower_bound_diff: Optional[float] = None
     is_non_inferior: Optional[bool] = None
     warning: Optional[str] = Field(
-        None,
+        default=None,
         description=(
             "Set when the result relied on a fallback method, e.g. both arms at "
             "0% or 100% conversion, where the unpooled standard error is zero."
@@ -199,7 +201,7 @@ class DecisionRiskResult(BaseModel):
         ..., description="False-negative discovery rate: P(H1 | not significant)."
     )
     fpr_at_p: Optional[float] = Field(
-        None,
+        default=None,
         description=(
             "False-positive risk at the observed p-value (Colquhoun 2017, "
             "'p-equals' approach). Weighs the strength of the evidence. None "
@@ -221,7 +223,7 @@ class BayesianResult(BaseModel):
     expected_loss: float
     conclusion: str
     effective_sample_size: Optional[float] = Field(
-        None,
+        default=None,
         description=(
             "Kish effective sample size of the lift-prior importance weights. "
             "Equals n_samples without a lift prior; a small fraction of "
@@ -295,18 +297,23 @@ class ContinuousMetricConfig(BaseModel):
 
     kpi: str = Field(..., description="Name of the numeric metric column to test.")
     group_col: str = Field(
-        "experience_variant_label",
+        default="experience_variant_label",
         description="Name of the categorical variant column.",
     )
     approach: ContinuousApproach = ContinuousApproach.HEURISTIC
     unit: AnalysisUnit = AnalysisUnit.PER_TRANSACTION
     control_label: Optional[str] = Field(
-        None,
+        default=None,
         description="Control variant for Gamma/Negative-Binomial post-hoc pairwise comparisons (3+ groups).",
     )
-    alpha: float = Field(0.05, gt=0.0, lt=1.0, description="Significance threshold.")
+    alpha: float = Field(
+        default=0.05,
+        gt=0.0,
+        lt=1.0,
+        description="Significance threshold.",
+    )
     count_max_unique: int = Field(
-        50,
+        default=50,
         gt=0,
         description=(
             "Heuristic path only: a KPI with at most this many distinct "
@@ -316,7 +323,7 @@ class ContinuousMetricConfig(BaseModel):
         ),
     )
     count_max_unique_ratio: float = Field(
-        0.05,
+        default=0.05,
         gt=0.0,
         lt=1.0,
         description=(
@@ -487,16 +494,23 @@ class SequentialConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    alpha: float = Field(0.05, gt=0.0, lt=1.0, description="Type I error rate.")
+    alpha: float = Field(default=0.05, gt=0.0, lt=1.0, description="Type I error rate.")
     # Renamed from 'beta' to avoid ambiguity with the Beta distribution
     # parameter (beta_prior) used elsewhere in the codebase.
     type_ii_error: float = Field(
-        0.20, gt=0.0, lt=1.0, description="Type II error rate (1 - power)."
+        default=0.20, gt=0.0, lt=1.0, description="Type II error rate (1 - power)."
     )
-    tau: float = Field(0.01, gt=0.0, description="Expected difference or threshold")
-    num_variants: int = Field(1, ge=1)
-    max_visitors: int = Field(10000, gt=0)
-    p0: Optional[float] = Field(None, description="Base rate for one-sample tests")
+    tau: float = Field(
+        default=0.01,
+        gt=0.0,
+        description="Expected difference or threshold",
+    )
+    num_variants: int = Field(default=1, ge=1)
+    max_visitors: int = Field(default=10000, gt=0)
+    p0: Optional[float] = Field(
+        default=None,
+        description="Base rate for one-sample tests",
+    )
 
 
 # --- Forecasting ---
@@ -545,10 +559,12 @@ class CustomHoliday(BaseModel):
     holiday: str = Field(..., min_length=1, description="Name of the holiday/event.")
     ds: date
     lower_window: int = Field(
-        0, le=0, description="Days before `ds` also treated as part of the event (<= 0)."
+        default=0, le=0,
+        description="Days before `ds` also treated as part of the event (<= 0)."
     )
     upper_window: int = Field(
-        0, ge=0, description="Days after `ds` also treated as part of the event (>= 0)."
+        default=0, ge=0,
+        description="Days after `ds` also treated as part of the event (>= 0)."
     )
 
 
@@ -568,10 +584,10 @@ class ForecastingEngineConfig(BaseModel):
 
     date_col: str = Field(..., description="Name of the date column in the input data.")
     conversions_col: Optional[str] = Field(
-        None, description="Column to forecast as 'conversions'."
+        default=None, description="Column to forecast as 'conversions'."
     )
     revenue_col: Optional[str] = Field(
-        None, description="Column to forecast as 'revenue'."
+        default=None, description="Column to forecast as 'revenue'."
     )
 
     granularity: ForecastGranularity = ForecastGranularity.DAILY
@@ -583,10 +599,10 @@ class ForecastingEngineConfig(BaseModel):
 
     growth: GrowthMode = GrowthMode.LINEAR
     cap: Optional[float] = Field(
-        None, description="Required saturating maximum when growth='logistic'."
+        default=None, description="Required saturating maximum when growth='logistic'."
     )
     floor: Optional[float] = Field(
-        None, description="Optional saturating minimum when growth='logistic'."
+        default=None, description="Optional saturating minimum when growth='logistic'."
     )
 
     seasonality_mode: SeasonalityMode = SeasonalityMode.MULTIPLICATIVE
@@ -604,10 +620,10 @@ class ForecastingEngineConfig(BaseModel):
         ),
     )
 
-    interval_width: float = Field(0.95, gt=0.0, lt=1.0)
+    interval_width: float = Field(default=0.95, gt=0.0, lt=1.0)
 
     cv_horizon_periods: Optional[int] = Field(
-        None,
+        default=None,
         gt=0,
         description=(
             "Cross-validation horizon, in the chosen granularity's units. "
@@ -711,7 +727,7 @@ class BQConnectionConfig(BaseModel):
         ..., min_length=1, description="GA4 export dataset, e.g. 'analytics_123456789'."
     )
     location: Optional[str] = Field(
-        None,
+        default=None,
         description="BigQuery job location (e.g. 'EU', 'US'). Auto-detected from the dataset when omitted.",
     )
 
@@ -745,7 +761,7 @@ class QueryCostEstimate(BaseModel):
         ..., ge=0.0, description="Percent of the 1 TB monthly free tier this query would consume."
     )
     is_dml: bool = Field(
-        False,
+        default=False,
         description=(
             "True if the dry run failed because the SQL is a DDL/DML script "
             "(dry run only estimates pure SELECT queries) -- see SequentialExtractionParams."
@@ -768,7 +784,7 @@ class UsageReport(BaseModel):
     used_pct: float = Field(..., ge=0.0, le=100.0)
     free_tier_bytes: int = Field(..., gt=0)
     permission_denied: bool = Field(
-        False,
+        default=False,
         description="True if the caller lacks bigquery.jobs.list on the project (usage could not be read).",
     )
     error: Optional[str] = None
@@ -936,7 +952,7 @@ class SequentialExtractionParams(BaseModel):
     use_persistence: bool = True
     reset_cumulative_data: bool = False
     cumulative_table: str = Field(
-        "",
+        default="",
         description=(
             "Fully-qualified 'project.dataset.table' to persist cumulative results to. "
             "Defaults to a placeholder table name when omitted."
@@ -1013,14 +1029,14 @@ class EventLogExtractionParams(BaseModel):
     connection: BQConnectionConfig
     date_range: DateRange
     case_id_col: str = Field(
-        "user_pseudo_id",
+        default="user_pseudo_id",
         description=(
             "GA4 column identifying a case (default: one case per user, across the whole date "
             "range). Ignored when session_id_param is set."
         ),
     )
     session_id_param: Optional[str] = Field(
-        None,
+        default=None,
         min_length=1,
         description=(
             "A nested event_params key, INT-valued (e.g. 'ga_session_id'), to use as the case "
@@ -1033,7 +1049,7 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     include_user_id: bool = Field(
-        True,
+        default=True,
         description=(
             "Emit user_pseudo_id as its own 'user_id' column, separate from whatever is used as "
             "case_id. Needed to build a composite case key (user_id + session id) downstream -- "
@@ -1042,7 +1058,8 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     activity_col: str = Field(
-        "event_name", description="GA4 column identifying an activity. Almost always 'event_name'."
+        default="event_name",
+        description="GA4 column identifying an activity. Almost always 'event_name'."
     )
     event_names: List[str] = Field(
         default_factory=list, description="Restrict to these event names. Empty = every event in range."
@@ -1066,7 +1083,7 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     include_purchase_revenue: bool = Field(
-        False,
+        default=False,
         description=(
             "Add a 'revenue' column from ecommerce.purchase_revenue -- GA4's flat, typed "
             "FLOAT64 purchase-revenue field, populated directly on 'purchase' events (NULL "
@@ -1077,10 +1094,11 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     include_device: bool = Field(
-        False, description="Add a 'device_category' column from device.category (e.g. 'desktop', 'mobile')."
+        default=False,
+        description="Add a 'device_category' column from device.category (e.g. 'desktop', 'mobile')."
     )
     include_traffic_source: bool = Field(
-        False,
+        default=False,
         description=(
             "Add 'traffic_source' and 'traffic_medium' columns for session-level attribution. "
             "Reads session_traffic_source_last_click.manual_campaign.{source,medium} (session-"
@@ -1091,7 +1109,7 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     include_item_category: bool = Field(
-        False,
+        default=False,
         description=(
             "Add a 'category' column: the first item's item_category from the repeated `items` "
             "field. Matches the expression PRoX's own static SQL template uses for CSV-export "
@@ -1099,7 +1117,7 @@ class EventLogExtractionParams(BaseModel):
         ),
     )
     include_geo: bool = Field(
-        False,
+        default=False,
         description=(
             "Add a 'geo_country' column from geo.country. Unlike include_item_category, this is "
             "populated automatically by GA4's own IP geolocation -- no ecommerce/GTM "
@@ -1164,13 +1182,15 @@ class TimeSeriesExtractionParams(BaseModel):
     date_range: DateRange
     metrics: List[TimeSeriesMetric] = Field(..., min_length=1)
     conversion_event: str = Field(
-        "purchase", description="Event name counted for the 'conversions' metric."
+        default="purchase",
+        description="Event name counted for the 'conversions' metric."
     )
     custom_event_name: Optional[str] = Field(
-        None, description="Required when metrics includes EVENT_COUNT -- the event to count."
+        default=None,
+        description="Required when metrics includes EVENT_COUNT -- the event to count."
     )
     segment_col: Optional[str] = Field(
-        None,
+        default=None,
         description=(
             "Optional column to split rows by (e.g. 'device.category'), producing one row "
             "per date+segment instead of one row per date."
