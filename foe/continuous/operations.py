@@ -4,12 +4,10 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 import numpy as np
-from statsmodels.discrete.discrete_model import NegativeBinomial
 from scipy.stats import normaltest, levene, kruskal, mannwhitneyu, rankdata
 from scipy.stats import studentized_range
-from scipy.optimize import brentq
-from scipy.special import digamma
 from foe.stats import distributions as dist
+from foe.stats import mle
 from foe.stats import oneway
 
 from foe.core.models import (
@@ -30,6 +28,22 @@ from foe.frequentist.confidence import compute_interval_difference
 # In NB2, Var = mu + alpha * mu^2, so alpha = 1e-4 adds 1% to the variance only
 # once mu = 100 -- far above the range of a count KPI.
 NB_ALPHA_LOWER_BOUND = 1e-4
+
+
+@dataclass(frozen=True)
+class NegBinFitResult:
+    """
+    Third element returned by ContinuousMetricEngine.fit_negbin.
+
+    params keeps the layout of the statsmodels results object it replaces
+    (Hexkit reads params[0]): the exog coefficients, then alpha last. For an
+    intercept-only fit params[0] is log(mean). A group with only zero counts
+    has log-mean -inf, so its coefficients are not finite.
+    """
+    params: np.ndarray
+    llf: float
+    alpha: float
+    group_means: np.ndarray
 
 
 @dataclass
@@ -476,37 +490,13 @@ class ContinuousMetricEngine:
         It is solved with Brent's method to machine precision, starting from
         Minka's (2002) closed-form approximation. A general-purpose 2-D
         optimiser stops short of the maximum on a sizeable share of samples,
-        which shifts likelihood-ratio p-values.
+        which shifts likelihood-ratio p-values. Implemented in
+        foe.stats.mle.gamma_mle.
 
         Missing values are dropped. Raises ValueError if fewer than two
         values remain, any value is <= 0, or all values are equal.
         """
-        x = pd.Series(data).dropna().to_numpy(dtype=float)
-        if x.size < 2:
-            raise ValueError("Need at least two observations to fit a Gamma.")
-        if np.any(x <= 0):
-            raise ValueError("The Gamma is defined for x > 0; got non-positive values.")
-
-        mean_x = float(x.mean())
-        s = math.log(mean_x) - float(np.log(x).mean())
-        if not s > 0:
-            raise ValueError("All values are equal; the Gamma shape is unbounded.")
-
-        def profile(k: float) -> float:
-            return math.log(k) - float(digamma(k)) - s
-
-        # Minka's approximation is within ~1.5% of the root; widen to a bracket.
-        k0 = (3.0 - s + math.sqrt((s - 3.0) ** 2 + 24.0 * s)) / (12.0 * s)
-        lo, hi = k0 / 2.0, k0 * 2.0
-        while profile(lo) <= 0:
-            lo /= 2.0
-        while profile(hi) >= 0:
-            hi *= 2.0
-        k = brentq(profile, lo, hi, xtol=1e-15, rtol=4 * np.finfo(float).eps, maxiter=200)
-
-        theta = mean_x / k
-        log_lik = float(dist.gamma.logpdf(x, a=k, scale=theta).sum())
-        return float(k), float(theta), log_lik
+        return mle.gamma_mle(data)
 
     @staticmethod
     def fit_unit_model(data, unit: AnalysisUnit) -> tuple[float, int]:
@@ -656,98 +646,93 @@ class ContinuousMetricEngine:
         return n_unique <= max_unique_for_check or (n_unique / len(s)) < max_unique_ratio
 
     @staticmethod
-    def fit_negbin(data, exog: np.ndarray | None = None) -> tuple[float, float, object]:
+    def fit_negbin(data, exog: np.ndarray | None = None) -> tuple[float, float, NegBinFitResult]:
         """
-        Fits a Negative Binomial (NB2) model by MLE. If exog is None, fits an
-        intercept-only model. Returns (log_likelihood, alpha, fitted_results).
+        Fits a Negative Binomial (NB2) model by exact MLE. If exog is None,
+        fits an intercept-only model. Returns (log_likelihood, alpha, result),
+        where result.params holds the exog coefficients followed by alpha.
 
-        alpha is the dispersion parameter statsmodels appends as the last
-        entry of the fitted params vector, regardless of exog width.
+        exog must be a one-way design: one coefficient per distinct design
+        row (e.g. an intercept plus one dummy per group), which is every
+        design FOE fits. The group means are then the sample means and only
+        alpha is optimised (foe.stats.mle.nb2_oneway). Other designs raise
+        ValueError rather than being fit as something else. data must be
+        non-negative integer counts.
+
+        alpha is exactly 0.0 when the counts are not overdispersed (the
+        Poisson boundary).
         """
         arr = np.asarray(data, dtype=float)
-        n = arr.size
         if exog is None:
-            exog = np.ones((n, 1))
-        model = NegativeBinomial(arr, exog, loglike_method="nb2")
-        try:
-            res = model.fit(disp=0, maxiter=200)
-        except Exception:
-            start = np.zeros(exog.shape[1] + 1)
-            start[0] = np.log(np.mean(arr) + 1e-6)
-            start[-1] = 1.0
-            res = model.fit(disp=0, maxiter=200, start_params=start)
-        return float(res.llf), float(res.params[-1]), res
+            exog = np.ones((arr.size, 1))
+        exog = np.asarray(exog, dtype=float)
+        if exog.ndim != 2 or exog.shape[0] != arr.size:
+            raise ValueError("exog must be 2-D with one row per observation.")
+        rows, row_of_obs = np.unique(exog, axis=0, return_inverse=True)
+        row_of_obs = row_of_obs.ravel()
+        if rows.shape[0] != exog.shape[1] or np.linalg.matrix_rank(rows) != rows.shape[0]:
+            raise ValueError(
+                "fit_negbin supports one-way designs only: one coefficient per "
+                "distinct design row, e.g. an intercept plus one dummy per group."
+            )
+        fit = mle.nb2_oneway(arr, row_of_obs)
+        mean_by_row = np.empty(rows.shape[0])
+        mean_by_row[np.asarray(fit.labels, dtype=int)] = fit.group_means
+        with np.errstate(divide="ignore", invalid="ignore"):
+            coefs = np.linalg.solve(rows, np.log(mean_by_row))
+        result = NegBinFitResult(
+            params=np.append(coefs, fit.alpha), llf=fit.log_lik,
+            alpha=fit.alpha, group_means=mean_by_row,
+        )
+        return fit.log_lik, fit.alpha, result
 
     @staticmethod
     def _run_negbin_lrt(work: pd.DataFrame, kpi: str, group_col: str) -> tuple[float, float, float]:
         """
         Likelihood Ratio Test comparing a Null NB2 model (single mean, shared
         across all variants) against an Alternative model (separate mean per
-        variant via group dummies, shared dispersion). Returns
-        (p_value, lr_stat, alpha_estimate).
+        variant, shared dispersion). Returns (p_value, lr_stat, alpha_estimate).
 
-        Group labels are coerced to str before dummy-encoding so a Categorical
-        dtype carrying unused categories can't inflate the dummy matrix with
-        columns for variants that aren't actually present in `work`.
+        Group labels are coerced to str so a Categorical dtype carrying unused
+        categories can't add groups for variants that aren't present in `work`.
+
+        A variant with only zero counts has fitted mean 0 (log-mean -inf). Its
+        log-likelihood contribution is still finite (0), and under H0 the
+        shared mean is an interior point, so the LR statistic and its
+        chi-squared reference remain valid: such a variant is tested normally
+        and, against non-zero arms, is typically significant. Only an all-zero
+        sample (no information about any mean or alpha) raises ValueError,
+        which callers treat as unfittable (p = 1.0 with a warning).
+
+        Point of interest (changed in the native rewrite, dependency-reduction
+        step 4, a deliberate methodology decision): with statsmodels,
+        identification was inferred from whether standard errors could be
+        computed. An all-zero variant was meant to be unfittable, but whether
+        it raised depended on the optimiser, so some such datasets reported
+        p = 1 and others a p-value; and sparse, non-separated data sometimes
+        stopped with a singular Hessian and was falsely reported as "could not
+        be fit". Now an all-zero variant is always tested, and only an
+        all-zero sample is unfittable.
         """
         data = work[kpi].to_numpy(dtype=float)
-        n = data.size
-        dummies = pd.get_dummies(work[group_col].astype(str), drop_first=True).to_numpy(dtype=float)
+        labels = work[group_col].astype(str).to_numpy()
 
-        exog_null = np.ones((n, 1))
-        ll_null, _, res_null = ContinuousMetricEngine.fit_negbin(data, exog_null)
-
-        exog_alt = np.column_stack([np.ones(n), dummies]) if dummies.shape[1] > 0 else exog_null
-        ll_alt, alpha_alt, res_alt = ContinuousMetricEngine.fit_negbin(data, exog_alt)
-
-        # Degenerate/tiny samples can fail to converge to a finite log-likelihood on some
-        # solver versions -- but a tiny sample that perfectly separates the groups (e.g. one
-        # group all-zero, another all-one) instead lets the dummy coefficient run toward
-        # +/-infinity while the optimizer still reports a finite log-likelihood and
-        # "converged": the fit isn't actually identified, just numerically unbounded. The
-        # Hessian is singular at that point, so standard errors can't be computed -- bse comes
-        # back all-NaN -- which is a solver-version-independent signal of that pathology,
-        # unlike checking the log-likelihood's finiteness alone. Both checks are kept: either
-        # is grounds to treat this the same as any other unfittable model (p=1.0, with a
-        # warning) rather than letting a nan or a spurious near-zero p_value leak out.
-        #
-        # One NaN-bse case is harmless: equi-/underdispersed counts (variance <= mean, e.g.
-        # items per order, always >= 1) push alpha to its lower bound. The Hessian is then
-        # singular in alpha alone, so bse is NaN although the fit is fine -- NB2 with
-        # alpha -> 0 is Poisson, and the log-likelihoods and LR statistic are valid. For
-        # that case identification is checked exactly: in this one-way design (intercept +
-        # one dummy per variant) the Poisson MLE is log(group mean), so it exists iff every
-        # group modelled has a positive total. A group of all zeros is the separation case.
-        # (Refitting a Poisson model and checking its bse is not a version-stable signal:
-        # statsmodels 0.15 returns huge but finite bse for a separated Poisson fit.)
-        group_totals = pd.Series(data).groupby(work[group_col].astype(str).to_numpy()).sum()
-
-        def _identified(res, group_totals_positive: bool) -> bool:
-            if np.all(np.isfinite(res.bse)):
-                return True
-            return float(res.params[-1]) <= NB_ALPHA_LOWER_BOUND and group_totals_positive
-
-        if (
-            not (np.isfinite(ll_null) and np.isfinite(ll_alt))
-            or not _identified(res_null, bool(data.sum() > 0))
-            or not _identified(res_alt, bool((group_totals > 0).all()))
-        ):
+        null = mle.nb2_oneway(data)
+        alt = mle.nb2_oneway(data, labels)
+        if not null.group_totals[0] > 0:
             raise ValueError(
-                "Negative Binomial model did not converge to a well-identified fit -- "
-                "non-finite log-likelihood, or standard errors could not be computed "
-                "(a common symptom of quasi/complete separation in a tiny or degenerate sample)."
+                "Negative Binomial model is not identified: every count is zero."
             )
 
-        # At the lower bound the fitted alpha (~1e-5..1e-7) is optimizer noise; report
-        # the limit it stands for (0.0, i.e. Poisson).
-        if alpha_alt <= NB_ALPHA_LOWER_BOUND:
-            alpha_alt = 0.0
+        # alpha at or below the bound adds a negligible share of variance for
+        # count KPIs; report it as the Poisson limit it stands for.
+        alpha_alt = 0.0 if alt.alpha <= NB_ALPHA_LOWER_BOUND else alt.alpha
 
-        df_diff = exog_alt.shape[1] - exog_null.shape[1]
+        df_diff = len(alt.labels) - 1
         if df_diff <= 0:
             return 1.0, 0.0, float(alpha_alt)
 
-        lr_stat = max(2.0 * (ll_alt - ll_null), 0.0)
+        lr_stat = max(2.0 * (alt.log_lik - null.log_lik), 0.0)
         p_value = float(dist.chi2.sf(lr_stat, df=df_diff))
         return p_value, float(lr_stat), float(alpha_alt)
 
